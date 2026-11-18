@@ -20,11 +20,11 @@
 | --- | --- |
 | 操作系统 | Windows（COM + 桌面 GUI，不能跑 macOS / Linux） |
 | Python | 3.13（开发态；分发版已由 PyInstaller 冻结，用户无需安装） |
-| 第三方包 | `pywin32`（`win32com.client` / `pythoncom`）、`windnd`（窗口拖放，可选）、`PyInstaller`（仅打包时） |
+| 第三方包 | `pywin32`（`win32com.client` / `pythoncom`）、`tkinterdnd2`（稳定窗口拖放）、`PyInstaller`（仅打包时） |
 | 标准库 | `tkinter`、`argparse`、`pathlib`、`threading`、`json` |
 | 外部依赖 | **Adobe Photoshop 桌面完整版**，且 `Photoshop.Application` COM 已注册 |
 
-`windnd` 不可用时会自动降级为「选择文件 / 选择文件夹」按钮，程序仍可正常使用。
+`tkinterdnd2` 不可用时会自动降级为「选择文件 / 选择文件夹」按钮，程序仍可正常使用。旧版使用的 `windnd` 在部分 64 位 Python/Tk 环境会触发 `ucrtbase.dll / 0xc0000409`，因此不再使用。
 
 ### 三种运行方式
 
@@ -65,7 +65,7 @@ python build_exe.py
 
 脚本要点：
 
-- 隐藏导入 `win32com.client` / `pythoncom` / `windnd` / `tkinter.*`——这些是运行时动态导入，PyInstaller 静态分析扫不到。
+- 隐藏导入 `win32com.client` / `pythoncom` / `tkinter.*`，并用 `--collect-all tkinterdnd2` 收集 TkDND 二进制与脚本。
 - 排除 `PySide6` / `PyQt5` / `PIL` / `numpy` / `matplotlib` / `scipy` / `pandas` / `pytest`，避免把几百 MB 无关依赖打进去。
 - **不删旧产物**：把 `build/work`、`build/out`、`build/spec` 挪到 `%TEMP%\old_build\<时间戳>`，再重建。受限环境下批量删除会触发保护；同时固定 `--workpath`、不加 `--clean`。
 - 中间产物 `build/`（约 27 MB）已被 `.gitignore` 排除，只有最终 EXE 入库。
@@ -80,10 +80,10 @@ python build_exe.py
 | `unique_outputs(src, formats)` | 成对分配 PNG / JPG 输出路径，整组避开同名，冲突加 `_PNG` / `_PNG_2` |
 | `human_size(n)` | 大文件友好体积显示（1~2 GB 时给进度提示） |
 | `photoshop()` | `win32com.client.Dispatch("Photoshop.Application")` |
-| `convert_one(...)` | 单张转换：每线程 `CoInitialize()` → `DoJavaScript` → `CoUninitialize()` |
+| `convert_one(...)` | 单张转换：每线程 `CoInitialize()` → `DoJavaScript`；Photoshop 忙时自动重试 → `CoUninitialize()` |
 | `selftest()` | 22 项纯逻辑校验，输出 JSON |
 | `App` | tkinter GUI：拖放、勾选、进度条、日志、后台 worker、`after(0, fn)` 回主线程 |
-| `run_cli(...)` | 命令行批量，复用 `convert_one()` |
+| `run_cli(...)` | 命令行批量，复用 `convert_one()`；窗口版无 stdout 时写 `%TEMP%\psdtool_cli.log` |
 | `main()` | 参数解析与四种入口分派 |
 
 `--selftest` 的 22 项覆盖：扩展名收集（含大写）、排除非 PS 文件、路径转义、`build_script` 的 PNG/JPG/trim 各分支、未选格式不写入脚本、输出成对且不覆盖、只选单格式时只占单格式名额等。全部通过会输出 `"selftest": "PASS"`。

@@ -25,7 +25,9 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -189,7 +191,20 @@ def convert_one(psd: Path, outputs: dict, trim_mode: str, formats) -> None:
                               outputs.get("png"), outputs.get("jpg"),
                               trim_mode, formats)
         try:
-            app.DoJavaScript(script)
+            # Photoshop 刚启动、正在载入插件或有短暂模态状态时会返回
+            # RPC_E_SERVERCALL_RETRYLATER (0x8001010A)。大文件场景下等待后
+            # 重试比立即判定失败可靠。
+            for attempt in range(60):
+                try:
+                    app.DoJavaScript(script)
+                    break
+                except Exception as exc:
+                    code = getattr(exc, "hresult", None)
+                    if code is None and getattr(exc, "args", None):
+                        code = exc.args[0]
+                    if code not in (-2147417846, -2147418111) or attempt == 59:
+                        raise
+                    time.sleep(2)
         finally:
             try:
                 del app
@@ -303,13 +318,22 @@ class App:
         import tkinter as tk
         from tkinter import filedialog, messagebox
 
+        # windnd 通过 ctypes 安装 Win32 回调，在部分 64 位 Python/Tk 组合上
+        # 拖入文件时会直接触发 ucrtbase.dll 0xc0000409，进程来不及抛出
+        # Python 异常。tkinterdnd2 使用 TkDND，避免原生回调崩溃。
+        try:
+            from tkinterdnd2 import DND_FILES, TkinterDnD
+        except ImportError:
+            DND_FILES = None
+            TkinterDnD = None
+
         self.tk = tk
         self.filedialog = filedialog
         self.messagebox = messagebox
         self.files = []
         self.busy = False
 
-        self.root = tk.Tk()
+        self.root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
         self.root.title(APP_TITLE)
         self.root.geometry("640x580")
         self.root.minsize(580, 520)
@@ -317,14 +341,17 @@ class App:
 
         self._build_ui()
 
-        # 窗口拖放：windnd 是纯 ctypes 实现，打包友好；不可用时自动降级
+        # 窗口拖放使用 TkDND；不可用时仍可用按钮或拖到 EXE 图标。
         self.dnd_ok = False
-        try:
-            import windnd
-            windnd.hook_dropfiles(self.root, func=self.on_drop, force_unicode=True)
-            self.dnd_ok = True
-        except Exception:
-            pass
+        if DND_FILES:
+            try:
+                self.drop.drop_target_register(DND_FILES)
+                self.drop.dnd_bind("<<Drop>>", self.on_drop)
+                self.root.drop_target_register(DND_FILES)
+                self.root.dnd_bind("<<Drop>>", self.on_drop)
+                self.dnd_ok = True
+            except Exception:
+                pass
 
         if startup_paths:
             self.add_paths(startup_paths)
@@ -456,13 +483,13 @@ class App:
             self.status.set("没有检测到 PSD / PSB 文件")
             self.log("! 输入里没有 .psd 或 .psb；请确认扩展名（.psb 已支持）")
 
-    def on_drop(self, arg):
+    def on_drop(self, event):
         try:
-            paths = list(arg) if isinstance(arg, (list, tuple)) else [arg]
-            paths = [str(p) for p in paths]
-            self.ui(lambda: self.add_paths(paths))
+            # Tk 的 splitlist 能正确解析带空格、中文和花括号包裹的路径。
+            paths = list(self.root.tk.splitlist(event.data))
+            self.add_paths(paths)
         except Exception:
-            self.ui(lambda: self.log("! 拖放数据解析失败，请改用按钮选择"))
+            self.log("! 拖放数据解析失败，请改用按钮选择")
 
     def pick_files(self):
         paths = self.filedialog.askopenfilenames(
@@ -556,27 +583,42 @@ class App:
 
 # ---------------------------------------------------------------------------
 def run_cli(paths, trim_mode, formats):
+    log_path = Path(tempfile.gettempdir()) / "psdtool_cli.log"
+
+    def emit(message):
+        text = str(message)
+        try:
+            if sys.stdout is not None:
+                print(text, flush=True)
+                return
+        except (OSError, ValueError):
+            pass
+        with log_path.open("a", encoding="utf-8") as stream:
+            stream.write(text + "\n")
+
+    try:
+        log_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     files = collect(paths)
     if not files:
-        print(json.dumps({"error": "没有检测到 PSD / PSB 文件", "inputs": paths},
-                         ensure_ascii=False))
+        emit(json.dumps({"error": "没有检测到 PSD / PSB 文件", "inputs": paths},
+                        ensure_ascii=False))
         return 2
-    print(f"共 {len(files)} 个文件，裁切={trim_mode}，格式={'+'.join(formats)}",
-          flush=True)
+    emit(f"共 {len(files)} 个文件，裁切={trim_mode}，格式={'+'.join(formats)}")
     ok = failed = 0
     for i, src in enumerate(files, 1):
         try:
             outputs = unique_outputs(src, formats)
-            print(f"[{i}/{len(files)}] {src.name} ({human_size(src.stat().st_size)}) ...",
-                  flush=True)
+            emit(f"[{i}/{len(files)}] {src.name} ({human_size(src.stat().st_size)}) ...")
             convert_one(src, outputs, trim_mode, formats)
-            print("    -> " + " + ".join(p.name for p in outputs.values()), flush=True)
+            emit("    -> " + " + ".join(p.name for p in outputs.values()))
             ok += 1
         except Exception as exc:
-            print(f"    FAILED: {exc}", flush=True)
-            traceback.print_exc()
+            emit(f"    FAILED: {exc}")
+            emit(traceback.format_exc())
             failed += 1
-    print(json.dumps({"ok": ok, "failed": failed}, ensure_ascii=False))
+    emit(json.dumps({"ok": ok, "failed": failed}, ensure_ascii=False))
     return 0 if failed == 0 else 1
 
 

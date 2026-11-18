@@ -11,6 +11,7 @@
 | | 程序 | 能力 |
 | --- | --- | --- |
 | **v2（推荐）** | [`dist/PSD-PSB一键转PNG-JPG.exe`](dist/PSD-PSB一键转PNG-JPG.exe) | **支持 .psd + .psb**、自动裁切到内容边界、PNG / JPG 可勾选、大文件进度提示 |
+| **v2 目录修复版（本机推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 修复窗口拖入闪退与无控制台 CLI 报错；解压后运行 `PSD一键转PNG工具/PSDTool.exe` |
 | v1（原版，保留） | [`dist/PSD一键转PNG.exe`](dist/PSD一键转PNG.exe)（13 KB .NET） | 只认 .psd、不裁切、只出 PNG |
 
 > v1 的原始二进制与逆向证据完整保留在仓库里，见 [`docs/REVERSE_ENGINEERING.md`](docs/REVERSE_ENGINEERING.md)。
@@ -216,7 +217,11 @@ flowchart TD
 
 ## 从源码构建
 
-v2 是 Python（tkinter + pywin32 + windnd），用 PyInstaller 打包：
+v2 是 Python（tkinter + pywin32 + tkinterdnd2），用 PyInstaller 打包：
+
+```bat
+pip install -r requirements.txt
+```
 
 ```bat
 cd psd-to-png
@@ -232,6 +237,8 @@ python build_exe.py --onedir
 ```
 
 产物是 `桌面\PSD一键转PNG工具\` 目录（内含 `PSDTool.exe` + `_internal`），然后把桌面/任务栏快捷方式指向 `PSDTool.exe`。目录版**不往 `%TEMP%` 解压**，因此不会弹 `Failed to remove temporary directory`，退出码干净为 0、启动也更快。实测 `rc=0`、`_MEI` 目录数前后不变。
+
+> 2026-11-18 修复：窗口拖放从 `windnd` 改为 `tkinterdnd2/TkDND`，解决部分 64 位 Python/Tk 环境拖入文件时 `ucrtbase.dll / 0xc0000409` 进程级崩溃；窗口版 CLI 同时改为在无控制台时写 `%TEMP%\psdtool_cli.log`，并在 Photoshop 返回“应用程序正忙”时自动重试。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。
 

@@ -192,7 +192,7 @@ NTT72-D.png/.jpg → NTT72-D_PNG.png/.jpg → NTT72-D_PNG_2.png/.jpg → ...
 | 输出 | 只 PNG | PNG / JPG 可勾选，成对 |
 | 模式 / 位深 | 32 位 → 16 位 | 再加非 RGB → RGB、JPG 前降 8 位 |
 | GUI | WinForms + `BeginInvoke` + STA 线程 | tkinter + `after(0, ...)` + 后台线程 |
-| 拖放 | WinForms 原生 | `windnd`（纯 ctypes），不可用时降级为按钮选择 |
+| 拖放 | WinForms 原生 | `tkinterdnd2` / TkDND，不可用时降级为按钮选择；避免 `windnd` 在部分 64 位环境触发原生崩溃 |
 | 分发 | 13 KB 单 EXE（.NET 4.0） | ~11 MB 单 EXE（PyInstaller onefile，自带运行时） |
 
 v1 的原始二进制、逆向证据与行为等价重建源码（`src/PsdToPng.cs`）全部保留，方便对照与二次开发。

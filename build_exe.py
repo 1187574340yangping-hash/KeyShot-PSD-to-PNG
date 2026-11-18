@@ -56,7 +56,7 @@ def pyinstaller_args(mode: str, work: Path, out: Path, spec: Path) -> list:
         "--specpath", str(spec),
         "--hidden-import", "win32com.client",
         "--hidden-import", "pythoncom",
-        "--hidden-import", "windnd",
+        "--collect-all", "tkinterdnd2",
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.ttk",
         "--hidden-import", "tkinter.filedialog",
