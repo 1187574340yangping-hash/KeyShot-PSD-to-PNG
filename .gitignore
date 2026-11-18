@@ -7,6 +7,12 @@ obj/
 .vs/
 dist/PsdToPng.rebuilt.exe
 
+# PyInstaller intermediate output (v2) — never commit, ~27 MB
+build/
+__pycache__/
+*.pyc
+*.spec
+
 # User artwork must never enter the repo
 *.psd
 *.psb
