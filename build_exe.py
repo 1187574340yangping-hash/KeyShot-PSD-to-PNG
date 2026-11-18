@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src" / "psd_to_png_gui.py"
 APP_NAME = "PSD一键转PNG"
+ASCII_NAME = "PSDTool"  # onedir 专用：中文名会让 PKG 路径解析失败
 OUT_NAME = "PSD-PSB一键转PNG-JPG.exe"
 PY = r"C:\Users\Administrator\.workbuddy-ai\binaries\python\envs\psdtool\Scripts\python.exe"
 
@@ -76,6 +77,9 @@ def pyinstaller_args(mode: str, work: Path, out: Path, spec: Path) -> list:
         cmd += ["--runtime-tmpdir", r"C:\Users\Administrator\PSDToolRuntime"]
 
     cmd.append("--onedir" if mode == "onedir" else "--onefile")
+    # onedir 用 ASCII 程序名：中文名在部分环境下会让 bootloader 无法定位 PKG
+    if mode == "onedir":
+        cmd[cmd.index("--name") + 1] = ASCII_NAME
     cmd.append(str(SRC))
     return cmd
 
@@ -98,8 +102,8 @@ def build(mode: str) -> int:
         return rc
 
     if mode == "onedir":
-        bundle = OUT / APP_NAME
-        exe = bundle / f"{APP_NAME}.exe"
+        bundle = OUT / ASCII_NAME
+        exe = bundle / f"{ASCII_NAME}.exe"
         if not exe.exists():
             print("[build] onedir exe not found")
             return 1

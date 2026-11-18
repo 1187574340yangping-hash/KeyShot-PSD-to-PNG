@@ -210,7 +210,7 @@ flowchart TD
 - **Photoshop 被占用会失败**：模态框或另一个脚本占用时 `DoJavaScript` 抛 COM 异常，提示后继续下一张。
 - **未做数字签名**：PyInstaller 打包的 EXE 部分杀软可能误报；源码在 [`src/`](src/)，可自行打包核对。
 - **真·多画板（Artboard）未专项验证**：工具按「一整张画布 + 四周留白」处理；若 PSD 内含多个 Artboard，建议先导出为单画布再试。
-- **退出时可能弹 `Failed to remove temporary directory`**：这是 PyInstaller 单文件版与本机安全软件的兼容问题，**不是转换失败**。v2.0.1 已把运行时临时目录固定到 `C:\Users\Administrator\PSDToolRuntime`，不再每次在系统 `%TEMP%` 生成随机 `_MEI` 目录——系统临时目录不会再堆积垃圾；若安全软件仍拦截该固定目录的清理，把它加入白名单即可彻底静默。
+- **退出时弹 `Failed to remove temporary directory`（onefile 版）**：PyInstaller 单文件模式每次运行都要往临时目录解压，退出时删除被安全软件锁住的 DLL 就会弹这个模态框，把进程卡死。这是打包方式的问题，**不是转换失败**。根治办法是用 `--onedir` 模式（见下方[从源码构建](#从源码构建)）——目录版不解压临时文件，从物理上不会出现这个弹窗，且退出干净、启动更快。仓库里的单文件版保留给没有此问题的机器；本机已改用目录版。
 
 ---
 
@@ -223,9 +223,19 @@ cd psd-to-png
 python build_exe.py
 ```
 
-产物写到 `dist/PSD-PSB一键转PNG-JPG.exe`。默认 onefile 模式使用固定的运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次运行都在系统 `%TEMP%` 留下删不掉的 `_MEI` 目录。
+产物写到 `dist/PSD-PSB一键转PNG-JPG.exe`（onefile，单文件分发用）。
 
-`build_exe.py` 另提供 `--onedir` 模式（输出到项目固定目录）。注意：在安全软件会拦截新 EXE 读取内嵌资源的机器上，onedir 可能出现 `Could not load PyInstaller's embedded PKG archive`，此时请继续用默认的 onefile 模式。开发态自检（不启动 Photoshop）：
+**本机推荐 `--onedir`（根治临时目录弹窗）**：
+
+```bat
+python build_exe.py --onedir
+```
+
+产物是 `桌面\PSD一键转PNG工具\` 目录（内含 `PSDTool.exe` + `_internal`），然后把桌面/任务栏快捷方式指向 `PSDTool.exe`。目录版**不往 `%TEMP%` 解压**，因此不会弹 `Failed to remove temporary directory`，退出码干净为 0、启动也更快。实测 `rc=0`、`_MEI` 目录数前后不变。
+
+> 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。
+
+开发态自检（不启动 Photoshop）：
 
 ```bat
 python src/psd_to_png_gui.py --selftest
