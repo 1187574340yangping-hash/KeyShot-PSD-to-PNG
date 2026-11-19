@@ -10,7 +10,8 @@
 
 | | 程序 | 能力 |
 | --- | --- | --- |
-| **v2.8（推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 同名文件策略（自动编号 / 覆盖 / 跳过）、记住导出设置、一键打开输出目录、三种工作模式卡片 |
+| **v2.9（推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 全新现代化界面：深色模式导航、圆角设置卡片、醒目拖放区、统一按钮和进度反馈 |
+| v2.8 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 同名文件策略（自动编号 / 覆盖 / 跳过）、记住导出设置、一键打开输出目录、三种工作模式卡片 |
 | v2.7 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 三张顶部业务模式卡片、蓝紫配色、拖放区随模式更新提示 |
 | v2.3 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | **支持 .psd + .psb**、默认合成 JPG、图层名称清单、同名输出文件夹、批量拖放与大文件进度 |
 | v1（原版，保留） | [`dist/PSD一键转PNG.exe`](dist/PSD一键转PNG.exe)（13 KB .NET） | 只认 .psd、不裁切、只出 PNG |
@@ -266,6 +267,8 @@ python build_exe.py --onedir
 > 2026-11-19 v2.7：界面改为三张顶部业务模式卡片，统一蓝紫配色、进度条和主按钮层级；拖放区会随当前模式显示对应的输出位置与操作提示。
 
 > 2026-11-19 v2.8：新增「同名文件」策略（自动编号 / 覆盖 / 跳过，渲染与画板默认自动编号），PNG 与 JPG 始终共用同一后缀；记住工作模式、裁切方式、导出格式、同名策略、A+ 质量与最近参考目录到 `%APPDATA%\PSDTool\settings.json`（不保存文件列表与隐私，坏设置自动回退默认）；转换完成后可一键「打开输出目录」（同目录只开一个窗口）；跳过不计入失败，日志明确标注。自检扩展到 41 项。界面同步改版：深色品牌头 + 带序号徽章的模式卡片 + 卡片式设置/进度/日志区，高级 A+ 专用窗口统一紫色主题与列表卡片。
+
+> 2026-11-19 v2.9：主窗口迁移到 CustomTkinter 现代组件体系，采用深色侧栏模式导航、圆角设置卡片、轻量阴影层级和统一品牌色；拖放、文件选择、冲突策略、进度显示及原有三种工作模式保持兼容。打包脚本会自动收集 CustomTkinter 主题资源。
 
 > 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 

@@ -64,6 +64,7 @@ def pyinstaller_args(mode: str, work: Path, out: Path, spec: Path) -> list:
         "--exclude-module", "PySide6",
         "--exclude-module", "PyQt5",
         "--collect-all", "PIL",
+        "--collect-all", "customtkinter",
         "--exclude-module", "numpy",
         "--exclude-module", "matplotlib",
         "--exclude-module", "scipy",

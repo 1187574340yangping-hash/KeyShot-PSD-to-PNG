@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.8
+PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.9
 
 面向「PS 大画板 / 大画布」场景：画布很大、内容只占中间一小块、
 四周大量透明或白色留白；文件常常是 1~2 GB 的 .psb。
@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.8"
+VERSION = "2.9"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -1583,6 +1583,248 @@ class App:
 
     def run(self):
         self.root.mainloop()
+
+
+LegacyApp = App
+
+
+class ModernApp(LegacyApp):
+    """CustomTkinter 现代界面；转换、拖放和任务逻辑沿用稳定后端。"""
+
+    def _build_ui(self):
+        import customtkinter as ctk
+        from tkinter import ttk
+
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+        self.root.geometry("1040x720")
+        self.root.minsize(920, 640)
+        self.root.configure(bg="#eef2f7")
+        self.root.grid_columnconfigure(1, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
+
+        font = ("Microsoft YaHei UI", 13)
+        small = ("Microsoft YaHei UI", 11)
+        title_font = ("Microsoft YaHei UI", 25, "bold")
+
+        # 左侧导航栏
+        sidebar = ctk.CTkFrame(self.root, width=218, corner_radius=0,
+                               fg_color="#111827")
+        sidebar.grid(row=0, column=0, sticky="nsew")
+        sidebar.grid_propagate(False)
+        ctk.CTkLabel(sidebar, text="PS", width=52, height=52,
+                     corner_radius=14, fg_color="#2563eb", text_color="white",
+                     font=("Segoe UI", 22, "bold")).pack(anchor="w", padx=22,
+                                                           pady=(25, 10))
+        ctk.CTkLabel(sidebar, text="PSD Studio", text_color="#f9fafb",
+                     font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=22)
+        ctk.CTkLabel(sidebar, text="电商设计批量导图工具", text_color="#9ca3af",
+                     font=small).pack(anchor="w", padx=22, pady=(2, 28))
+
+        self.output_mode = self.tk.StringVar(
+            value=MODE_VALUES.get(self.settings["mode"], MODE_VALUES["render"]))
+        self.mode_buttons = []
+        mode_items = (
+            ("渲染图片", "JPG 放在源文件旁", MODE_VALUES["render"], "▣"),
+            ("主副图画板", "自动建立同名文件夹", MODE_VALUES["artboard"], "▦"),
+            ("高级 A+", "电脑端 / 手机端", MODE_VALUES["aplus"], "✦"),
+        )
+
+        def choose_mode(value):
+            self.output_mode.set(value)
+            self.sync_mode_ui()
+
+        for heading, subtitle, value, icon in mode_items:
+            button = ctk.CTkButton(
+                sidebar, text=f"{icon}   {heading}\n      {subtitle}", anchor="w",
+                height=62, corner_radius=12, font=small,
+                fg_color="transparent", hover_color="#1f2937",
+                text_color="#d1d5db", command=lambda v=value: choose_mode(v))
+            button.pack(fill="x", padx=14, pady=4)
+            self.mode_buttons.append((button, value))
+
+        ctk.CTkLabel(sidebar, text=f"版本  {VERSION}", text_color="#6b7280",
+                     font=("Segoe UI", 10)).pack(side="bottom", anchor="w",
+                                                   padx=22, pady=20)
+
+        # 主工作区
+        main = ctk.CTkFrame(self.root, corner_radius=0, fg_color="#eef2f7")
+        main.grid(row=0, column=1, sticky="nsew")
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(2, weight=1)
+
+        top = ctk.CTkFrame(main, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=28, pady=(24, 14))
+        self.page_title = ctk.CTkLabel(top, text="渲染图片",
+                                      text_color="#111827", font=title_font)
+        self.page_title.pack(anchor="w")
+        self.page_hint = ctk.CTkLabel(
+            top, text="批量调用 Photoshop 导出，原稿不会被修改",
+            text_color="#64748b", font=small)
+        self.page_hint.pack(anchor="w", pady=(2, 0))
+
+        self.drop = self.tk.Label(
+            main, text="将 PSD / PSB 文件或文件夹拖到这里\n也可以点击下方按钮选择",
+            font=("Microsoft YaHei UI", 14), bg="#ffffff", fg="#2563eb",
+            justify="center", relief="flat", bd=0, cursor="hand2")
+        self.drop.grid(row=1, column=0, sticky="ew", padx=28, pady=(0, 14),
+                       ipady=30)
+        self.drop.configure(highlightthickness=1, highlightbackground="#bfdbfe")
+
+        content = ctk.CTkFrame(main, fg_color="transparent")
+        content.grid(row=2, column=0, sticky="nsew", padx=28)
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(2, weight=1)
+
+        settings = ctk.CTkFrame(content, corner_radius=16, fg_color="#ffffff",
+                                border_width=1, border_color="#e2e8f0")
+        settings.grid(row=0, column=0, sticky="ew")
+        settings.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(settings, text="导出设置", font=("Microsoft YaHei UI", 14, "bold"),
+                     text_color="#1e293b").grid(row=0, column=0, columnspan=4,
+                                                 sticky="w", padx=18, pady=(14, 8))
+        ctk.CTkLabel(settings, text="裁切方式", font=small,
+                     text_color="#64748b").grid(row=1, column=0, sticky="w",
+                                                 padx=(18, 8), pady=8)
+        self.trim = self.tk.StringVar(
+            value=TRIM_MODES.get(self.settings["trim"], TRIM_MODES["transparent"]))
+        ctk.CTkOptionMenu(settings, variable=self.trim,
+                          values=list(TRIM_MODES.values()), height=34,
+                          corner_radius=9, fg_color="#f1f5f9",
+                          button_color="#e2e8f0", button_hover_color="#cbd5e1",
+                          text_color="#334155", dropdown_fg_color="white",
+                          dropdown_text_color="#334155", font=small).grid(
+                              row=1, column=1, sticky="ew", padx=(0, 16), pady=8)
+
+        self.var_png = self.tk.BooleanVar(value=self.settings["png"])
+        self.var_jpg = self.tk.BooleanVar(value=self.settings["jpg"])
+        ctk.CTkCheckBox(settings, text="PNG 透明", variable=self.var_png,
+                        font=small, corner_radius=5).grid(row=1, column=2,
+                                                         padx=8, pady=8)
+        ctk.CTkCheckBox(settings, text="JPG 最高质量", variable=self.var_jpg,
+                        font=small, corner_radius=5).grid(row=1, column=3,
+                                                         padx=(8, 18), pady=8)
+
+        ctk.CTkLabel(settings, text="同名文件", font=small,
+                     text_color="#64748b").grid(row=2, column=0, sticky="w",
+                                                 padx=(18, 8), pady=(6, 16))
+        self.conflict = self.tk.StringVar(value=self.settings["conflict"])
+        self.conflict_controls = []
+        conflict_frame = ctk.CTkFrame(settings, fg_color="transparent")
+        conflict_frame.grid(row=2, column=1, columnspan=3, sticky="w",
+                            pady=(6, 16))
+        for label, value in (("自动编号", "number"), ("覆盖", "overwrite"),
+                             ("跳过", "skip")):
+            item = ctk.CTkRadioButton(conflict_frame, text=label,
+                                      variable=self.conflict, value=value,
+                                      font=small, radiobutton_width=18,
+                                      radiobutton_height=18)
+            item.pack(side="left", padx=(0, 20))
+            self.conflict_controls.append(item)
+
+        actions = ctk.CTkFrame(content, fg_color="transparent")
+        actions.grid(row=1, column=0, sticky="ew", pady=12)
+        self.btn_files = ctk.CTkButton(actions, text="选择文件", width=105,
+                                       height=38, corner_radius=10,
+                                       fg_color="#ffffff", hover_color="#f1f5f9",
+                                       border_width=1, border_color="#cbd5e1",
+                                       text_color="#334155", command=self.pick_files)
+        self.btn_folder = ctk.CTkButton(actions, text="选择文件夹", width=115,
+                                        height=38, corner_radius=10,
+                                        fg_color="#ffffff", hover_color="#f1f5f9",
+                                        border_width=1, border_color="#cbd5e1",
+                                        text_color="#334155", command=self.pick_folder)
+        self.btn_clear = ctk.CTkButton(actions, text="清空", width=72, height=38,
+                                       corner_radius=10, fg_color="transparent",
+                                       hover_color="#e2e8f0", text_color="#64748b",
+                                       command=self.clear)
+        self.btn_stop = ctk.CTkButton(actions, text="停止", width=72, height=38,
+                                      corner_radius=10, fg_color="#fee2e2",
+                                      hover_color="#fecaca", text_color="#b91c1c",
+                                      command=self.request_stop, state="disabled")
+        self.btn_go = ctk.CTkButton(actions, text="开始转换", width=126, height=40,
+                                    corner_radius=11, font=("Microsoft YaHei UI", 12, "bold"),
+                                    command=self.start)
+        self.btn_open_dir = ctk.CTkButton(
+            actions, text="打开输出目录", width=118, height=38, corner_radius=10,
+            fg_color="#ffffff", hover_color="#f1f5f9", border_width=1,
+            border_color="#cbd5e1", text_color="#334155",
+            command=self.open_output_dir, state="disabled")
+        for widget in (self.btn_files, self.btn_folder, self.btn_clear, self.btn_stop):
+            widget.pack(side="left", padx=(0, 8))
+        self.btn_go.pack(side="right")
+        self.btn_open_dir.pack(side="right", padx=(0, 8))
+
+        status_card = ctk.CTkFrame(content, corner_radius=16, fg_color="#ffffff",
+                                   border_width=1, border_color="#e2e8f0")
+        status_card.grid(row=2, column=0, sticky="nsew", pady=(0, 18))
+        status_card.grid_columnconfigure(0, weight=1)
+        status_card.grid_rowconfigure(4, weight=1)
+        self.status = self.tk.StringVar(value="等待文件")
+        ctk.CTkLabel(status_card, textvariable=self.status, anchor="w",
+                     font=small, text_color="#334155").grid(
+                         row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
+        style = ttk.Style()
+        style.configure("Modern.Horizontal.TProgressbar", troughcolor="#e2e8f0",
+                        background="#2563eb", borderwidth=0)
+        self.progress = ttk.Progressbar(status_card, mode="determinate",
+                                        style="Modern.Horizontal.TProgressbar")
+        self.progress.grid(row=1, column=0, sticky="ew", padx=16)
+        self.current_progress_label = self.tk.StringVar(value="当前文件：空闲")
+        ctk.CTkLabel(status_card, textvariable=self.current_progress_label,
+                     anchor="w", font=("Microsoft YaHei UI", 10),
+                     text_color="#64748b").grid(row=2, column=0, sticky="ew",
+                                                 padx=16, pady=(8, 4))
+        self.current_progress = ttk.Progressbar(
+            status_card, mode="determinate", maximum=100, value=0,
+            style="Modern.Horizontal.TProgressbar")
+        self.current_progress.grid(row=3, column=0, sticky="ew", padx=16)
+        self.logbox = ctk.CTkTextbox(status_card, corner_radius=10,
+                                     fg_color="#f8fafc", text_color="#334155",
+                                     font=("Consolas", 10), border_width=0)
+        self.logbox.grid(row=4, column=0, sticky="nsew", padx=16, pady=12)
+        self.logbox.configure(state="disabled")
+        self.sync_mode_ui()
+
+    def sync_mode_ui(self):
+        mode = self.output_mode.get()
+        if not hasattr(self, "btn_go"):
+            return
+        for button, value in self.mode_buttons:
+            selected = value == mode
+            is_aplus = value.startswith("高级 A+")
+            active = "#7c3aed" if is_aplus else "#2563eb"
+            button.configure(fg_color=active if selected else "transparent",
+                             hover_color="#6d28d9" if is_aplus else "#1f2937",
+                             text_color="white" if selected else "#d1d5db")
+        aplus = mode.startswith("高级 A+")
+        for item in self.conflict_controls:
+            item.configure(state="disabled" if aplus else "normal")
+        if aplus:
+            self.page_title.configure(text="高级 A+ 连屏")
+            self.page_hint.configure(text="自动生成电脑端与手机端分图")
+            self.drop.configure(text="高级 A+ 使用独立工作区\n点击“打开高级 A+”开始",
+                                fg="#7c3aed", highlightbackground="#ddd6fe")
+            self.btn_go.configure(text="打开高级 A+", fg_color="#7c3aed",
+                                  hover_color="#6d28d9")
+        elif mode.startswith("主副图画板"):
+            self.page_title.configure(text="主副图画板")
+            self.page_hint.configure(text="输出自动整理到源文件同名文件夹")
+            self.drop.configure(text="将主副图 PSD / PSB 拖到这里\n自动建立同名输出文件夹",
+                                fg="#2563eb", highlightbackground="#bfdbfe")
+            self.btn_go.configure(text="开始转换", fg_color="#2563eb",
+                                  hover_color="#1d4ed8")
+        else:
+            self.page_title.configure(text="渲染图片")
+            self.page_hint.configure(text="最高质量 JPG 默认保存在源文件旁边")
+            self.drop.configure(text="将渲染 PSD / PSB 文件或文件夹拖到这里\n也可以点击下方按钮选择",
+                                fg="#2563eb", highlightbackground="#bfdbfe")
+            self.btn_go.configure(text="开始转换", fg_color="#2563eb",
+                                  hover_color="#1d4ed8")
+
+
+# 默认启用现代界面；LegacyApp 保留作故障回退和代码对照。
+App = ModernApp
 
 
 # ---------------------------------------------------------------------------
