@@ -33,9 +33,20 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.1"
+VERSION = "2.2"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
+
+STAGE_INFO = {
+    "connecting": (3, "连接 Photoshop"),
+    "opening": (8, "打开大文件"),
+    "preparing": (30, "转换色彩/位深"),
+    "trimming": (45, "裁切画布"),
+    "saving_png": (60, "保存 PNG"),
+    "saving_jpg": (80, "拼合并保存 JPG"),
+    "closing": (95, "关闭内存文档"),
+    "done": (100, "完成"),
+}
 
 TRIM_MODES = {
     "transparent": "裁掉透明边（默认，适合四周透明留白）",
@@ -57,7 +68,7 @@ def js_escape(s) -> str:
             .replace("\n", "\\n"))
 
 
-def build_script(psd, png, jpg, trim_mode, formats) -> str:
+def build_script(psd, png, jpg, trim_mode, formats, progress_file=None) -> str:
     """
     生成交给 Photoshop.Application.DoJavaScript 执行的 ExtendScript。
 
@@ -67,6 +78,15 @@ def build_script(psd, png, jpg, trim_mode, formats) -> str:
         两者     → 先存 PNG（保留透明），再拼合填白存 JPG
     """
     fmts = set(formats or ())
+    progress_js = ""
+    if progress_file:
+        progress_js = (
+            f"var pf=new File('{js_escape(progress_file)}');"
+            "function pg(s){try{pf.open('a');pf.writeln(s);pf.close();}catch(e){}}")
+
+    def stage(name):
+        return f"pg('{name}');" if progress_file else ""
+
     trim_js = {
         "none": "",
         "transparent": "d.trim(TrimType.TRANSPARENT,true,true,true,true);",
@@ -77,14 +97,16 @@ def build_script(psd, png, jpg, trim_mode, formats) -> str:
 
     png_js = ""
     if "png" in fmts:
-        png_js = ("var po=new PNGSaveOptions();po.interlaced=false;"
+        png_js = (f"{stage('saving_png')}"
+                  "var po=new PNGSaveOptions();po.interlaced=false;"
                   f"d.saveAs(new File('{js_escape(png)}'),po,true,Extension.LOWERCASE);")
 
     jpg_js = ""
     if "jpg" in fmts:
         # JPG 不支持 alpha：先 flatten 用背景色（默认白）填充透明，
         # 再降为 8 位/通道（JPG 不支持 16 位），最后保存。
-        jpg_js = ("d.flatten();"
+        jpg_js = (f"{stage('saving_jpg')}"
+                  "d.flatten();"
                   "if(d.bitsPerChannel==BitsPerChannelType.SIXTEEN)"
                   "d.bitsPerChannel=BitsPerChannelType.EIGHT;"
                   "var jo=new JPEGSaveOptions();jo.quality=12;"
@@ -94,18 +116,22 @@ def build_script(psd, png, jpg, trim_mode, formats) -> str:
 
     return (
         "app.displayDialogs=DialogModes.NO;"
+        f"{progress_js}"
         "var d=null;"
         "try{"
+        f"{stage('opening')}"
         f"d=app.open(new File('{js_escape(psd)}'));"
         # PNG 不支持 32 位浮点通道，也不支持 CMYK —— 先做内存里的转换。
         # 文档最终以 DONOTSAVECHANGES 关闭，磁盘原稿不受任何影响。
+        f"{stage('preparing')}"
         "if(d.bitsPerChannel==BitsPerChannelType.THIRTYTWO)"
         "d.bitsPerChannel=BitsPerChannelType.SIXTEEN;"
         "if(d.mode!=DocumentMode.RGB)d.changeMode(ChangeMode.RGB);"
-        f"{trim_js}"
+        f"{stage('trimming')}{trim_js}"
         f"{png_js}"
         f"{jpg_js}"
-        "}finally{if(d)d.close(SaveOptions.DONOTSAVECHANGES);}"
+        f"}}finally{{{stage('closing')}if(d)d.close(SaveOptions.DONOTSAVECHANGES);"
+        f"{stage('done')}}}"
     )
 
 
@@ -181,16 +207,42 @@ def photoshop():
         raise RuntimeError("没有找到 Photoshop，请先确认已安装桌面完整版") from exc
 
 
-def convert_one(psd: Path, outputs: dict, trim_mode: str, formats) -> None:
+def convert_one(psd: Path, outputs: dict, trim_mode: str, formats,
+                progress_cb=None) -> None:
     """在调用方线程里执行；COM 需要每个线程自己 CoInitialize。"""
     import pythoncom
 
     pythoncom.CoInitialize()
+    marker = (Path(tempfile.gettempdir()) /
+              f"psdtool_progress_{os.getpid()}_{threading.get_ident()}.txt")
+    stop_monitor = threading.Event()
+    monitor = None
+    emitted_count = [0]
     try:
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if progress_cb:
+            progress_cb("connecting")
+
+            def watch_progress():
+                while not stop_monitor.wait(0.2):
+                    try:
+                        stages = marker.read_text(encoding="utf-8").splitlines()
+                    except (OSError, UnicodeError):
+                        continue
+                    for current in stages[emitted_count[0]:]:
+                        if current:
+                            progress_cb(current)
+                        emitted_count[0] += 1
+
+            monitor = threading.Thread(target=watch_progress, daemon=True)
+            monitor.start()
         app = photoshop()
         script = build_script(str(psd),
                               outputs.get("png"), outputs.get("jpg"),
-                              trim_mode, formats)
+                              trim_mode, formats, marker if progress_cb else None)
         try:
             # Photoshop 刚启动、正在载入插件或有短暂模态状态时会返回
             # RPC_E_SERVERCALL_RETRYLATER (0x8001010A)。大文件场景下等待后
@@ -212,6 +264,22 @@ def convert_one(psd: Path, outputs: dict, trim_mode: str, formats) -> None:
             except Exception:
                 pass
     finally:
+        stop_monitor.set()
+        if monitor:
+            monitor.join(timeout=1)
+        if progress_cb:
+            try:
+                stages = marker.read_text(encoding="utf-8").splitlines()
+                for final_stage in stages[emitted_count[0]:]:
+                    if final_stage:
+                        progress_cb(final_stage)
+                    emitted_count[0] += 1
+            except (OSError, UnicodeError):
+                pass
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
         pythoncom.CoUninitialize()
 
 
@@ -333,6 +401,7 @@ class App:
         self.messagebox = messagebox
         self.files = []
         self.busy = False
+        self.stop_requested = threading.Event()
 
         self.root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
         self.root.report_callback_exception = self.report_callback_exception
@@ -407,18 +476,23 @@ class App:
         tk.Checkbutton(row2, text="JPG（自动填白，质量 12）", variable=self.var_jpg,
                        font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
                        activebackground="#f5f6f8").pack(side="left")
+        tk.Button(row2, text="快速预设", command=self.fast_preset,
+                  font=("Microsoft YaHei UI", 8)).pack(side="right")
 
         btns = tk.Frame(self.root, bg="#f5f6f8")
         btns.pack(fill="x", padx=20, pady=(0, 8))
-        self.btn_files = tk.Button(btns, text="选择文件（可多选）", width=17,
+        self.btn_files = tk.Button(btns, text="选择文件（可多选）", width=15,
                                    command=self.pick_files)
-        self.btn_folder = tk.Button(btns, text="选择文件夹（递归）", width=17,
+        self.btn_folder = tk.Button(btns, text="选择文件夹（递归）", width=15,
                                     command=self.pick_folder)
-        self.btn_go = tk.Button(btns, text="开始转换", width=12,
+        self.btn_go = tk.Button(btns, text="开始转换", width=10,
                                 command=self.start, bg="#2b6cb0", fg="white",
                                 activebackground="#245a94", activeforeground="white")
-        self.btn_clear = tk.Button(btns, text="清空", width=7, command=self.clear)
-        for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
+        self.btn_stop = tk.Button(btns, text="停止队列", width=9,
+                                  command=self.request_stop, state="disabled")
+        self.btn_clear = tk.Button(btns, text="清空", width=6, command=self.clear)
+        for b in (self.btn_files, self.btn_folder, self.btn_go,
+                  self.btn_stop, self.btn_clear):
             b.pack(side="left", padx=(0, 8))
 
         progress_row = tk.Frame(self.root, bg="#f5f6f8")
@@ -494,6 +568,15 @@ class App:
             out.append("jpg")
         return tuple(out)
 
+    def fast_preset(self):
+        if self.busy:
+            return
+        self.trim.set(TRIM_MODES["none"])
+        self.var_png.set(True)
+        self.var_jpg.set(False)
+        self.status.set("快速预设：不裁切，只输出 PNG")
+        self.log("已启用快速预设：不裁切，只输出 PNG；文件更快，画布尺寸保持不变。")
+
     def add_paths(self, paths):
         if self.busy:
             return
@@ -544,6 +627,20 @@ class App:
         self.status.set("等待文件")
         self.log("已清空列表。")
 
+    def request_stop(self):
+        if not self.busy:
+            return
+        self.stop_requested.set()
+        self.btn_stop.configure(state="disabled")
+        self.status.set("已请求停止：当前文件完成后停止后续队列")
+        self.log("! 已请求停止；为保护原稿，当前 Photoshop 操作完成后再停止。")
+
+    def update_stage(self, name, stage):
+        percent, label = STAGE_INFO.get(stage, (0, stage))
+        short_name = name if len(name) <= 14 else name[:12] + "…"
+        self.current_progress.configure(mode="determinate", value=percent)
+        self.current_progress_label.set(f"{label}：{short_name}")
+
     # -- conversion ---------------------------------------------------------
     def start(self):
         if self.busy:
@@ -557,8 +654,10 @@ class App:
             return
 
         self.busy = True
+        self.stop_requested.clear()
         for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
             b.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
         self.progress["maximum"] = len(self.files)
         self.progress["value"] = 0
         self.current_progress.stop()
@@ -575,7 +674,10 @@ class App:
     def worker(self, files, trim_mode, formats):
         ok = 0
         failed = 0
+        processed = 0
         for i, src in enumerate(files, 1):
+            if self.stop_requested.is_set():
+                break
             name = src.name
             try:
                 size = src.stat().st_size
@@ -584,13 +686,13 @@ class App:
             self.ui(lambda i=i, name=name, size=size: self.status.set(
                 f"[{i}/{len(files)}] 正在处理 {name}  ({human_size(size)})"
                 " — 大画板请耐心等待"))
-            self.ui(lambda name=name: (
-                self.current_progress_label.set(f"当前：{name[:8]}"),
-                self.current_progress.configure(mode="indeterminate"),
-                self.current_progress.start(12)))
+            self.ui(lambda name=name: self.update_stage(name, "connecting"))
             try:
                 outputs = unique_outputs(src, formats)
-                convert_one(src, outputs, trim_mode, formats)
+                convert_one(
+                    src, outputs, trim_mode, formats,
+                    progress_cb=lambda stage, name=name: self.ui(
+                        lambda stage=stage, name=name: self.update_stage(name, stage)))
                 ok += 1
                 produced = " + ".join(p.name for p in outputs.values())
                 self.ui(lambda name=name, produced=produced: self.log(
@@ -605,19 +707,27 @@ class App:
                 self.current_progress.stop(),
                 self.current_progress.configure(mode="determinate", value=0)))
             self.ui(lambda i=i: self.progress.configure(value=i))
+            processed = i
 
         done_ok, done_fail = ok, failed
-        self.ui(lambda: self.finish(done_ok, done_fail))
+        stopped = processed < len(files) and self.stop_requested.is_set()
+        remaining = len(files) - processed
+        self.ui(lambda: self.finish(done_ok, done_fail, stopped, remaining))
 
-    def finish(self, ok, failed):
+    def finish(self, ok, failed, stopped=False, remaining=0):
         self.busy = False
         self.current_progress.stop()
         self.current_progress.configure(mode="determinate", value=0)
         self.current_progress_label.set("当前文件：空闲")
+        self.btn_stop.configure(state="disabled")
         for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
             b.configure(state="normal")
-        self.status.set(f"完成：成功 {ok} 个，失败 {failed} 个")
-        self.log(f"— 全部结束：成功 {ok}，失败 {failed}")
+        if stopped:
+            self.status.set(f"已停止：成功 {ok}，失败 {failed}，未处理 {remaining}")
+            self.log(f"— 队列已停止：成功 {ok}，失败 {failed}，未处理 {remaining}")
+        else:
+            self.status.set(f"完成：成功 {ok} 个，失败 {failed} 个")
+            self.log(f"— 全部结束：成功 {ok}，失败 {failed}")
         if failed:
             self.messagebox.showwarning(APP_TITLE,
                                         f"完成，但有 {failed} 个文件失败。\n详情见下方日志。")
@@ -656,7 +766,9 @@ def run_cli(paths, trim_mode, formats):
         try:
             outputs = unique_outputs(src, formats)
             emit(f"[{i}/{len(files)}] {src.name} ({human_size(src.stat().st_size)}) ...")
-            convert_one(src, outputs, trim_mode, formats)
+            convert_one(src, outputs, trim_mode, formats,
+                        progress_cb=lambda stage: emit(
+                            f"    [{STAGE_INFO.get(stage, (0, stage))[1]}]"))
             emit("    -> " + " + ".join(p.name for p in outputs.values()))
             ok += 1
         except Exception as exc:

@@ -11,7 +11,7 @@
 | | 程序 | 能力 |
 | --- | --- | --- |
 | **v2（推荐）** | [`dist/PSD-PSB一键转PNG-JPG.exe`](dist/PSD-PSB一键转PNG-JPG.exe) | **支持 .psd + .psb**、自动裁切到内容边界、PNG / JPG 可勾选、大文件进度提示 |
-| **v2.1 目录修复版（本机推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 加固窗口拖入、增加当前文件动态进度与总进度、修复无控制台 CLI 报错；解压后运行 `PSD一键转PNG工具/PSDTool.exe` |
+| **v2.2 目录修复版（本机推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 阶段进度、快速预设、停止队列、批量拖入加固；解压后运行 `PSD一键转PNG工具/PSDTool.exe` |
 | v1（原版，保留） | [`dist/PSD一键转PNG.exe`](dist/PSD一键转PNG.exe)（13 KB .NET） | 只认 .psd、不裁切、只出 PNG |
 
 > v1 的原始二进制与逆向证据完整保留在仓库里，见 [`docs/REVERSE_ENGINEERING.md`](docs/REVERSE_ENGINEERING.md)。
@@ -241,6 +241,8 @@ python build_exe.py --onedir
 > 2026-11-18 修复：窗口拖放从 `windnd` 改为 `tkinterdnd2/TkDND`，解决部分 64 位 Python/Tk 环境拖入文件时 `ucrtbase.dll / 0xc0000409` 进程级崩溃；窗口版 CLI 同时改为在无控制台时写 `%TEMP%\psdtool_cli.log`，并在 Photoshop 返回“应用程序正忙”时自动重试。
 
 > 2026-11-19 v2.1：拖放只注册一个 TkDND 目标并明确返回复制动作，增加 `%TEMP%\psdtool_gui_error.log` 回调异常记录；界面新增“当前文件”动态进度和批量“总进度”。
+
+> 2026-11-19 v2.2：当前文件显示“连接 Photoshop → 打开大文件 → 转换色彩/位深 → 裁切画布 → 保存 PNG/JPG → 关闭文档”的真实阶段；新增“快速预设”（不裁切、只出 PNG）和“停止队列”（当前文件安全完成后停止）。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。
 

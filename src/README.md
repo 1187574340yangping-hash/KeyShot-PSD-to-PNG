@@ -81,9 +81,9 @@ python build_exe.py
 | `unique_outputs(src, formats)` | 成对分配 PNG / JPG 输出路径，整组避开同名，冲突加 `_PNG` / `_PNG_2` |
 | `human_size(n)` | 大文件友好体积显示（1~2 GB 时给进度提示） |
 | `photoshop()` | `win32com.client.Dispatch("Photoshop.Application")` |
-| `convert_one(...)` | 单张转换：每线程 `CoInitialize()` → `DoJavaScript`；Photoshop 忙时自动重试 → `CoUninitialize()` |
+| `convert_one(...)` | 单张转换：每线程 `CoInitialize()` → `DoJavaScript`；阶段标记、Photoshop 忙自动重试 → `CoUninitialize()` |
 | `selftest()` | 22 项纯逻辑校验，输出 JSON |
-| `App` | tkinter GUI：拖放、勾选、进度条、日志、后台 worker、`after(0, fn)` 回主线程 |
+| `App` | tkinter GUI：拖放、快速预设、阶段/总进度、停止队列、日志、后台 worker、`after(0, fn)` 回主线程 |
 | `run_cli(...)` | 命令行批量，复用 `convert_one()`；窗口版无 stdout 时写 `%TEMP%\psdtool_cli.log` |
 | `main()` | 参数解析与四种入口分派 |
 
