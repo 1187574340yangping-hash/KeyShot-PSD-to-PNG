@@ -1654,7 +1654,7 @@ class ModernApp(LegacyApp):
         main.grid_rowconfigure(2, weight=1)
 
         top = ctk.CTkFrame(main, fg_color="transparent")
-        top.grid(row=0, column=0, sticky="ew", padx=28, pady=(24, 14))
+        top.grid(row=0, column=0, sticky="ew", padx=28, pady=(20, 10))
         self.page_title = ctk.CTkLabel(top, text="渲染图片",
                                       text_color="#111827", font=title_font)
         self.page_title.pack(anchor="w")
@@ -1664,12 +1664,14 @@ class ModernApp(LegacyApp):
         self.page_hint.pack(anchor="w", pady=(2, 0))
 
         self.drop = self.tk.Label(
-            main, text="将 PSD / PSB 文件或文件夹拖到这里\n也可以点击下方按钮选择",
-            font=("Microsoft YaHei UI", 14), bg="#ffffff", fg="#2563eb",
+            main, text="⇧\n将 PSD / PSB 文件或文件夹拖到这里\n也可以点击下方按钮选择",
+            font=("Microsoft YaHei UI", 16, "bold"), bg="#eff6ff", fg="#1d4ed8",
             justify="center", relief="flat", bd=0, cursor="hand2")
         self.drop.grid(row=1, column=0, sticky="ew", padx=28, pady=(0, 14),
-                       ipady=30)
-        self.drop.configure(highlightthickness=1, highlightbackground="#bfdbfe")
+                       ipady=36)
+        self.drop.configure(highlightthickness=2, highlightbackground="#60a5fa",
+                            highlightcolor="#2563eb")
+        self.drop.bind("<Button-1>", lambda _event: self.pick_files())
 
         content = ctk.CTkFrame(main, fg_color="transparent")
         content.grid(row=2, column=0, sticky="nsew", padx=28)
@@ -1803,22 +1805,25 @@ class ModernApp(LegacyApp):
         if aplus:
             self.page_title.configure(text="高级 A+ 连屏")
             self.page_hint.configure(text="自动生成电脑端与手机端分图")
-            self.drop.configure(text="高级 A+ 使用独立工作区\n点击“打开高级 A+”开始",
-                                fg="#7c3aed", highlightbackground="#ddd6fe")
+            self.drop.configure(text="✦\n高级 A+ 使用独立工作区\n点击“打开高级 A+”开始",
+                                bg="#f5f3ff", fg="#6d28d9",
+                                highlightbackground="#a78bfa")
             self.btn_go.configure(text="打开高级 A+", fg_color="#7c3aed",
                                   hover_color="#6d28d9")
         elif mode.startswith("主副图画板"):
             self.page_title.configure(text="主副图画板")
             self.page_hint.configure(text="输出自动整理到源文件同名文件夹")
-            self.drop.configure(text="将主副图 PSD / PSB 拖到这里\n自动建立同名输出文件夹",
-                                fg="#2563eb", highlightbackground="#bfdbfe")
+            self.drop.configure(text="⇧\n将主副图 PSD / PSB 拖到这里\n自动建立同名输出文件夹",
+                                bg="#eff6ff", fg="#1d4ed8",
+                                highlightbackground="#60a5fa")
             self.btn_go.configure(text="开始转换", fg_color="#2563eb",
                                   hover_color="#1d4ed8")
         else:
             self.page_title.configure(text="渲染图片")
             self.page_hint.configure(text="最高质量 JPG 默认保存在源文件旁边")
-            self.drop.configure(text="将渲染 PSD / PSB 文件或文件夹拖到这里\n也可以点击下方按钮选择",
-                                fg="#2563eb", highlightbackground="#bfdbfe")
+            self.drop.configure(text="⇧\n将渲染 PSD / PSB 文件或文件夹拖到这里\n也可以点击下方按钮选择",
+                                bg="#eff6ff", fg="#1d4ed8",
+                                highlightbackground="#60a5fa")
             self.btn_go.configure(text="开始转换", fg_color="#2563eb",
                                   hover_color="#1d4ed8")
 
