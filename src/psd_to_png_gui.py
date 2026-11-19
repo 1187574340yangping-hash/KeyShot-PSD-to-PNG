@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.6"
+VERSION = "2.7"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -601,9 +601,9 @@ class App:
         self.root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
         self.root.report_callback_exception = self.report_callback_exception
         self.root.title(APP_TITLE)
-        self.root.geometry("640x580")
-        self.root.minsize(580, 520)
-        self.root.configure(bg="#f5f6f8")
+        self.root.geometry("720x650")
+        self.root.minsize(660, 590)
+        self.root.configure(bg="#f3f4f6")
 
         self._build_ui()
 
@@ -628,15 +628,39 @@ class App:
         tk = self.tk
         from tkinter import ttk
 
-        title = tk.Label(self.root, text="PSD / PSB 一键转 PNG · JPG",
-                         font=("Microsoft YaHei UI", 17, "bold"),
-                         bg="#f5f6f8", fg="#1f2733")
-        title.pack(anchor="w", padx=20, pady=(16, 2))
+        style = ttk.Style()
+        style.configure("Accent.Horizontal.TProgressbar", troughcolor="#e5e7eb",
+                        background="#2563eb", borderwidth=0)
+
+        title = tk.Label(self.root, text="PSD Studio  ·  批量导图工具",
+                         font=("Microsoft YaHei UI", 18, "bold"),
+                         bg="#f3f4f6", fg="#111827")
+        title.pack(anchor="w", padx=24, pady=(18, 2))
 
         hint = tk.Label(self.root,
                         text="支持大画板 .psd / .psb · 自动裁到内容边界 · 导出格式可勾选",
-                        font=("Microsoft YaHei UI", 9), bg="#f5f6f8", fg="#6b7280")
-        hint.pack(anchor="w", padx=20, pady=(0, 10))
+                        font=("Microsoft YaHei UI", 9), bg="#f3f4f6", fg="#6b7280")
+        hint.pack(anchor="w", padx=24, pady=(0, 12))
+
+        # 三种业务模式使用卡片式选择，减少下拉框的隐藏信息。
+        mode_row = tk.Frame(self.root, bg="#f3f4f6")
+        mode_row.pack(fill="x", padx=24, pady=(0, 10))
+        self.output_mode = tk.StringVar(value="渲染图片（JPG 放源文件旁）")
+        modes = (
+            ("渲染图片", "JPG 放源文件旁", "渲染图片（JPG 放源文件旁）"),
+            ("主副图画板", "自动建立文件夹", "主副图画板（建立同名文件夹）"),
+            ("高级 A+", "电脑端 / 手机端", "高级 A+ 连屏（电脑端 / 手机端）"),
+        )
+        for heading, sub, value in modes:
+            card = tk.Radiobutton(
+                mode_row, text=f"{heading}\n{sub}", variable=self.output_mode,
+                value=value, indicatoron=False, command=self.sync_mode_ui,
+                font=("Microsoft YaHei UI", 9, "bold"), justify="left",
+                anchor="w", padx=14, pady=9, bd=1, relief="solid",
+                bg="#ffffff", fg="#374151", selectcolor="#dbeafe",
+                activebackground="#eff6ff", activeforeground="#1d4ed8")
+            card.pack(side="left", fill="x", expand=True,
+                      padx=(0, 8 if value != modes[-1][2] else 0))
 
         self.drop = tk.Label(self.root,
                             text="↓\n把 PSD / PSB 文件或文件夹拖到这里\n"
@@ -644,30 +668,13 @@ class App:
                             font=("Microsoft YaHei UI", 12),
                             bg="#ffffff", fg="#2b6cb0", relief="solid", bd=1,
                             justify="center")
-        self.drop.pack(fill="both", expand=True, padx=20, pady=(0, 10))
-
-        # 第 1 行：工作模式
-        mode_row = tk.Frame(self.root, bg="#f5f6f8")
-        mode_row.pack(fill="x", padx=20, pady=(0, 6))
-        tk.Label(mode_row, text="工作模式：", font=("Microsoft YaHei UI", 9),
-                 bg="#f5f6f8").pack(side="left")
-        self.output_mode = tk.StringVar(value="渲染图片（JPG 放源文件旁）")
-        mode_combo = ttk.Combobox(mode_row, textvariable=self.output_mode,
-                                  state="readonly", width=34,
-                                  font=("Microsoft YaHei UI", 9))
-        mode_combo["values"] = (
-            "渲染图片（JPG 放源文件旁）",
-            "主副图画板（建立同名文件夹）",
-            "高级 A+ 连屏（电脑端 / 手机端）",
-        )
-        mode_combo.current(0)
-        mode_combo.pack(side="left", padx=4)
+        self.drop.pack(fill="both", expand=True, padx=24, pady=(0, 10))
 
         # 第 2 行：裁切方式
-        row1 = tk.Frame(self.root, bg="#f5f6f8")
-        row1.pack(fill="x", padx=20, pady=(0, 6))
+        row1 = tk.Frame(self.root, bg="#f3f4f6")
+        row1.pack(fill="x", padx=24, pady=(0, 6))
         tk.Label(row1, text="裁切方式：", font=("Microsoft YaHei UI", 9),
-                 bg="#f5f6f8").pack(side="left")
+                 bg="#f3f4f6").pack(side="left")
         self.trim = tk.StringVar(value=TRIM_MODES["transparent"])
         combo = ttk.Combobox(row1, textvariable=self.trim, state="readonly",
                              width=36, font=("Microsoft YaHei UI", 9))
@@ -676,47 +683,46 @@ class App:
         combo.pack(side="left", padx=4)
 
         # 第 3 行：导出格式（可勾选）
-        row2 = tk.Frame(self.root, bg="#f5f6f8")
-        row2.pack(fill="x", padx=20, pady=(0, 8))
+        row2 = tk.Frame(self.root, bg="#f3f4f6")
+        row2.pack(fill="x", padx=24, pady=(0, 8))
         tk.Label(row2, text="导出格式：", font=("Microsoft YaHei UI", 9),
-                 bg="#f5f6f8").pack(side="left")
+                 bg="#f3f4f6").pack(side="left")
         self.var_png = tk.BooleanVar(value=False)
         self.var_jpg = tk.BooleanVar(value=True)
         tk.Checkbutton(row2, text="PNG（保留透明）", variable=self.var_png,
-                       font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
-                       activebackground="#f5f6f8").pack(side="left", padx=(4, 10))
+                       font=("Microsoft YaHei UI", 9), bg="#f3f4f6",
+                       activebackground="#f3f4f6").pack(side="left", padx=(4, 10))
         tk.Checkbutton(row2, text="JPG（最高质量，Photoshop 12/12）", variable=self.var_jpg,
-                       font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
-                       activebackground="#f5f6f8").pack(side="left")
+                       font=("Microsoft YaHei UI", 9), bg="#f3f4f6",
+                       activebackground="#f3f4f6").pack(side="left")
         tk.Button(row2, text="快速预设", command=self.fast_preset,
                    font=("Microsoft YaHei UI", 8)).pack(side="right")
 
-        btns = tk.Frame(self.root, bg="#f5f6f8")
-        btns.pack(fill="x", padx=20, pady=(0, 8))
+        btns = tk.Frame(self.root, bg="#f3f4f6")
+        btns.pack(fill="x", padx=24, pady=(0, 10))
         self.btn_files = tk.Button(btns, text="选择文件（可多选）", width=15,
                                    command=self.pick_files)
         self.btn_folder = tk.Button(btns, text="选择文件夹（递归）", width=15,
                                     command=self.pick_folder)
         self.btn_go = tk.Button(btns, text="开始转换", width=10,
-                                 command=self.start, bg="#2b6cb0", fg="white",
-                                 activebackground="#245a94", activeforeground="white")
-        mode_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self.btn_go.configure(
-                text="打开高级 A+" if self.output_mode.get().startswith("高级 A+")
-                else "开始转换"))
+                                 command=self.start, bg="#2563eb", fg="white",
+                                 font=("Microsoft YaHei UI", 9, "bold"),
+                                 bd=0, padx=8, pady=3,
+                                 activebackground="#1d4ed8", activeforeground="white")
         self.btn_stop = tk.Button(btns, text="停止队列", width=9,
                                   command=self.request_stop, state="disabled")
         self.btn_clear = tk.Button(btns, text="清空", width=6, command=self.clear)
         for b in (self.btn_files, self.btn_folder, self.btn_go,
                   self.btn_stop, self.btn_clear):
             b.pack(side="left", padx=(0, 8))
+        self.sync_mode_ui()
 
         progress_row = tk.Frame(self.root, bg="#f5f6f8")
         progress_row.pack(fill="x", padx=20, pady=(0, 6))
         tk.Label(progress_row, text="总进度", width=7, anchor="w",
                  font=("Microsoft YaHei UI", 9), bg="#f5f6f8").pack(side="left")
-        self.progress = ttk.Progressbar(progress_row, mode="determinate")
+        self.progress = ttk.Progressbar(progress_row, mode="determinate",
+                                        style="Accent.Horizontal.TProgressbar")
         self.progress.pack(side="left", fill="x", expand=True)
 
         current_row = tk.Frame(self.root, bg="#f5f6f8")
@@ -727,8 +733,9 @@ class App:
                  bg="#f5f6f8").pack(side="left")
         # 空闲时使用 0 值确定进度，避免 Windows 主题在停止的动态进度条上
         # 仍显示一小块绿色，让人误以为程序卡住。
-        self.current_progress = ttk.Progressbar(current_row, mode="determinate",
-                                                maximum=100, value=0)
+        self.current_progress = ttk.Progressbar(
+            current_row, mode="determinate", maximum=100, value=0,
+            style="Accent.Horizontal.TProgressbar")
         self.current_progress.pack(side="left", fill="x", expand=True)
 
         self.status = tk.StringVar(value="等待文件")
@@ -742,6 +749,33 @@ class App:
         self.logbox.configure(state="disabled")
 
     # -- helpers ------------------------------------------------------------
+    def sync_mode_ui(self):
+        """让主按钮与拖放说明跟随当前业务模式。"""
+        mode = self.output_mode.get()
+        if not hasattr(self, "btn_go"):
+            return
+        if mode.startswith("高级 A+"):
+            self.btn_go.configure(text="打开高级 A+", bg="#7c3aed",
+                                  activebackground="#6d28d9")
+            self.drop.configure(
+                text="高级 A+ 连屏导图\n点击“打开高级 A+”进入专用工作区\n"
+                     "支持电脑端、手机端和旧版文件夹匹配",
+                fg="#7c3aed")
+        elif mode.startswith("主副图画板"):
+            self.btn_go.configure(text="开始转换", bg="#2563eb",
+                                  activebackground="#1d4ed8")
+            self.drop.configure(
+                text="↓\n把主副图 PSD / PSB 拖到这里\n"
+                     "自动建立源文件同名文件夹",
+                fg="#2563eb")
+        else:
+            self.btn_go.configure(text="开始转换", bg="#2563eb",
+                                  activebackground="#1d4ed8")
+            self.drop.configure(
+                text="↓\n把渲染 PSD / PSB 文件或文件夹拖到这里\n"
+                     "JPG 默认保存在源文件旁边",
+                fg="#2563eb")
+
     def log(self, msg: str):
         def _do():
             self.logbox.configure(state="normal")
