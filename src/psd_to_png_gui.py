@@ -38,6 +38,23 @@ VERSION = "2.8"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
+# ---- UI 主题配色（浅色，统一卡片与品牌层次）----
+C_BG = "#eef1f6"          # 窗口底色
+C_CARD = "#ffffff"        # 卡片底
+C_HEADER = "#111827"      # 顶部品牌栏
+C_PRIMARY = "#2563eb"     # 主色（蓝）
+C_PRIMARY_D = "#1d4ed8"
+C_PURPLE = "#7c3aed"      # 高级 A+ 主色（紫）
+C_PURPLE_D = "#6d28d9"
+C_INK = "#1f2937"         # 主文字
+C_SUB = "#6b7280"         # 次文字
+C_MUTED = "#9ca3af"
+C_BORDER = "#e5e7eb"      # 边框
+C_SOFT_BLUE = "#eff6ff"   # 浅蓝底
+C_BLUE_LINE = "#bfdbfe"
+C_SOFT_PURPLE = "#f5f3ff"
+C_PURPLE_LINE = "#ddd6fe"
+
 STAGE_INFO = {
     "connecting": (3, "连接 Photoshop"),
     "opening": (8, "打开大文件"),
@@ -819,9 +836,9 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.report_callback_exception = self.report_callback_exception
         self.root.title(APP_TITLE)
-        self.root.geometry("720x650")
-        self.root.minsize(660, 590)
-        self.root.configure(bg="#f3f4f6")
+        self.root.geometry("760x720")
+        self.root.minsize(700, 620)
+        self.root.configure(bg=C_BG)
 
         self._build_ui()
 
@@ -848,53 +865,86 @@ class App:
 
         style = ttk.Style()
         style.configure("Accent.Horizontal.TProgressbar", troughcolor="#e5e7eb",
-                        background="#2563eb", borderwidth=0)
+                        background=C_PRIMARY, borderwidth=0)
+        style.configure("TCombobox", fieldbackground=C_CARD,
+                        background=C_CARD, borderwidth=1)
 
-        title = tk.Label(self.root, text="PSD Studio  ·  批量导图工具",
-                         font=("Microsoft YaHei UI", 18, "bold"),
-                         bg="#f3f4f6", fg="#111827")
-        title.pack(anchor="w", padx=24, pady=(18, 2))
+        F = ("Microsoft YaHei UI", 9)
+        FB = ("Microsoft YaHei UI", 9, "bold")
 
-        hint = tk.Label(self.root,
-                        text="支持大画板 .psd / .psb · 自动裁到内容边界 · 导出格式可勾选",
-                        font=("Microsoft YaHei UI", 9), bg="#f3f4f6", fg="#6b7280")
-        hint.pack(anchor="w", padx=24, pady=(0, 12))
+        # ---------- 品牌头部 ----------
+        header = tk.Frame(self.root, bg=C_HEADER, height=88)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        badge = tk.Frame(header, bg=C_HEADER)
+        badge.pack(side="left", padx=(22, 0))
+        tk.Label(badge, text="PS", font=("Segoe UI", 20, "bold"),
+                 bg=C_PRIMARY, fg="white", width=3, pady=6).pack()
+        ht = tk.Frame(header, bg=C_HEADER)
+        ht.pack(side="left", padx=(14, 0), pady=17)
+        tk.Label(ht, text="PSD Studio", font=("Segoe UI", 16, "bold"),
+                 bg=C_HEADER, fg="#f9fafb").pack(anchor="w")
+        tk.Label(ht, text="批量导图工具 · 让 Photoshop 精确导出，原稿零改动",
+                 font=F, bg=C_HEADER, fg="#9ca3af").pack(anchor="w", pady=(3, 0))
+        tk.Label(header, text=f"v{VERSION}", font=("Segoe UI", 10, "bold"),
+                 bg="#1f2937", fg="#93c5fd", padx=10, pady=3).pack(
+                     side="right", padx=20)
 
-        # 三种业务模式使用卡片式选择，减少下拉框的隐藏信息。
-        mode_row = tk.Frame(self.root, bg="#f3f4f6")
-        mode_row.pack(fill="x", padx=24, pady=(0, 10))
+        body = tk.Frame(self.root, bg=C_BG)
+        body.pack(fill="both", expand=True, padx=18, pady=(14, 12))
+
+        # ---------- 工作模式卡片（带序号徽章）----------
+        mode_row = tk.Frame(body, bg=C_BG)
+        mode_row.pack(fill="x", pady=(0, 12))
         self.output_mode = tk.StringVar(
             value=MODE_VALUES.get(self.settings["mode"], MODE_VALUES["render"]))
-        modes = tuple((heading, sub, value)
-                      for _, heading, sub, value in MODE_DEFS)
-        for heading, sub, value in modes:
-            card = tk.Radiobutton(
-                mode_row, text=f"{heading}\n{sub}", variable=self.output_mode,
-                value=value, indicatoron=False, command=self.sync_mode_ui,
-                font=("Microsoft YaHei UI", 9, "bold"), justify="left",
-                anchor="w", padx=14, pady=9, bd=1, relief="solid",
-                bg="#ffffff", fg="#374151", selectcolor="#dbeafe",
-                activebackground="#eff6ff", activeforeground="#1d4ed8")
+        modes = tuple((key, heading, sub, value)
+                      for key, heading, sub, value in MODE_DEFS)
+        self.mode_cards = []
+        for idx, (key, heading, sub, value) in enumerate(modes):
+            accent = C_PURPLE if key == "aplus" else C_PRIMARY
+            card = tk.Frame(mode_row, bg=C_CARD, highlightthickness=1,
+                            highlightbackground=C_BORDER, bd=0)
             card.pack(side="left", fill="x", expand=True,
-                      padx=(0, 8 if value != modes[-1][2] else 0))
+                      padx=(0, 10 if idx < len(modes) - 1 else 0))
+            num = tk.Label(card, text=str(idx + 1), font=("Segoe UI", 9, "bold"),
+                           bg=accent, fg="white", width=2)
+            num.pack(anchor="w", padx=(10, 0), pady=(8, 0))
+            rb = tk.Radiobutton(
+                card, text=f"{heading}\n{sub}", variable=self.output_mode,
+                value=value, indicatoron=False, command=self.sync_mode_ui,
+                font=FB, justify="left", anchor="w", padx=12, pady=10,
+                bd=0, relief="flat", bg=C_CARD, fg=C_INK, selectcolor=C_CARD,
+                activebackground=C_SOFT_BLUE, activeforeground=C_PRIMARY,
+                highlightthickness=0)
+            rb.pack(fill="both", expand=True)
+            self.mode_cards.append((card, num, rb, value, accent))
 
-        self.drop = tk.Label(self.root,
-                            text="↓\n把 PSD / PSB 文件或文件夹拖到这里\n"
-                                 "默认导出到源文件旁边，不修改原稿",
-                            font=("Microsoft YaHei UI", 12),
-                            bg="#ffffff", fg="#2b6cb0", relief="solid", bd=1,
-                            justify="center")
-        self.drop.pack(fill="both", expand=True, padx=24, pady=(0, 10))
+        # ---------- 拖放区 ----------
+        self.drop = tk.Label(
+            body,
+            text="↓\n把 PSD / PSB 文件或文件夹拖到这里\n"
+                 "默认导出到源文件旁边，不修改原稿",
+            font=("Microsoft YaHei UI", 12), bg=C_CARD, fg=C_PRIMARY,
+            relief="flat", bd=0, justify="center", padx=16, pady=22)
+        self.drop.pack(fill="both", expand=True, pady=(0, 12))
+        self.drop.configure(highlightthickness=2, highlightbackground=C_BLUE_LINE)
 
-        # 第 2 行：裁切方式
-        row1 = tk.Frame(self.root, bg="#f3f4f6")
-        row1.pack(fill="x", padx=24, pady=(0, 6))
-        tk.Label(row1, text="裁切方式：", font=("Microsoft YaHei UI", 9),
-                 bg="#f3f4f6").pack(side="left")
+        # ---------- 设置卡片：裁切 / 格式 / 同名 ----------
+        settings = tk.Frame(body, bg=C_CARD, highlightthickness=1,
+                            highlightbackground=C_BORDER)
+        settings.pack(fill="x", pady=(0, 12))
+        inner = tk.Frame(settings, bg=C_CARD)
+        inner.pack(fill="x", padx=16, pady=(12, 10))
+
+        row1 = tk.Frame(inner, bg=C_CARD)
+        row1.pack(fill="x", pady=(0, 8))
+        tk.Label(row1, text="裁切方式", width=9, anchor="w",
+                 font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
         self.trim = tk.StringVar(
             value=TRIM_MODES.get(self.settings["trim"], TRIM_MODES["transparent"]))
         combo = ttk.Combobox(row1, textvariable=self.trim, state="readonly",
-                             width=36, font=("Microsoft YaHei UI", 9))
+                             width=38, font=F)
         combo["values"] = [TRIM_MODES[k] for k in TRIM_MODES]
         if self.trim.get() in combo["values"]:
             combo.current(list(combo["values"]).index(self.trim.get()))
@@ -902,94 +952,129 @@ class App:
             combo.current(0)
         combo.pack(side="left", padx=4)
 
-        # 第 3 行：导出格式（可勾选）
-        row2 = tk.Frame(self.root, bg="#f3f4f6")
-        row2.pack(fill="x", padx=24, pady=(0, 8))
-        tk.Label(row2, text="导出格式：", font=("Microsoft YaHei UI", 9),
-                 bg="#f3f4f6").pack(side="left")
+        row2 = tk.Frame(inner, bg=C_CARD)
+        row2.pack(fill="x", pady=(0, 8))
+        tk.Label(row2, text="导出格式", width=9, anchor="w",
+                 font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
         self.var_png = tk.BooleanVar(value=self.settings["png"])
         self.var_jpg = tk.BooleanVar(value=self.settings["jpg"])
         tk.Checkbutton(row2, text="PNG（保留透明）", variable=self.var_png,
-                       font=("Microsoft YaHei UI", 9), bg="#f3f4f6",
-                       activebackground="#f3f4f6").pack(side="left", padx=(4, 10))
-        tk.Checkbutton(row2, text="JPG（最高质量，Photoshop 12/12）", variable=self.var_jpg,
-                       font=("Microsoft YaHei UI", 9), bg="#f3f4f6",
-                       activebackground="#f3f4f6").pack(side="left")
+                       font=F, bg=C_CARD, fg=C_INK, activebackground=C_CARD,
+                       selectcolor=C_SOFT_BLUE, relief="flat").pack(side="left", padx=(4, 12))
+        tk.Checkbutton(row2, text="JPG（最高质量 12/12）", variable=self.var_jpg,
+                       font=F, bg=C_CARD, fg=C_INK, activebackground=C_CARD,
+                       selectcolor=C_SOFT_BLUE, relief="flat").pack(side="left")
         tk.Button(row2, text="快速预设", command=self.fast_preset,
-                   font=("Microsoft YaHei UI", 8)).pack(side="right")
+                  font=("Microsoft YaHei UI", 8), bg=C_CARD, fg=C_SUB,
+                  bd=1, relief="solid", padx=10, pady=2,
+                  activebackground="#f9fafb").pack(side="right")
 
-        # 第 4 行：同名文件处理策略（仅渲染/画板转换使用；高级 A+ 参考模式固定覆盖）
-        row3 = tk.Frame(self.root, bg="#f3f4f6")
-        row3.pack(fill="x", padx=24, pady=(0, 8))
+        # 高级 A+ 参考模式固定覆盖，不受本行影响。
+        row3 = tk.Frame(inner, bg=C_CARD)
+        row3.pack(fill="x")
         self.conflict_row = row3
-        tk.Label(row3, text="同名文件：", font=("Microsoft YaHei UI", 9),
-                 bg="#f3f4f6").pack(side="left")
+        tk.Label(row3, text="同名文件", width=9, anchor="w",
+                 font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
         self.conflict = tk.StringVar(value=self.settings["conflict"])
         for text, key in (("自动编号", "number"), ("覆盖", "overwrite"),
                           ("跳过", "skip")):
             tk.Radiobutton(row3, text=text, variable=self.conflict, value=key,
-                           font=("Microsoft YaHei UI", 9), bg="#f3f4f6",
-                           activebackground="#f3f4f6").pack(side="left", padx=(4, 8))
+                           font=F, bg=C_CARD, fg=C_INK, activebackground=C_CARD,
+                           selectcolor=C_SOFT_BLUE, relief="flat",
+                           activeforeground=C_PRIMARY).pack(side="left", padx=(4, 10))
 
-        btns = tk.Frame(self.root, bg="#f3f4f6")
-        btns.pack(fill="x", padx=24, pady=(0, 10))
-        self.btn_files = tk.Button(btns, text="选择文件（可多选）", width=15,
-                                   command=self.pick_files)
-        self.btn_folder = tk.Button(btns, text="选择文件夹（递归）", width=15,
-                                    command=self.pick_folder)
-        self.btn_go = tk.Button(btns, text="开始转换", width=10,
-                                 command=self.start, bg="#2563eb", fg="white",
-                                 font=("Microsoft YaHei UI", 9, "bold"),
-                                 bd=0, padx=8, pady=3,
-                                 activebackground="#1d4ed8", activeforeground="white")
+        # ---------- 操作按钮 ----------
+        btns = tk.Frame(body, bg=C_BG)
+        btns.pack(fill="x", pady=(0, 12))
+        light_btn = dict(font=F, bg=C_CARD, fg=C_INK, bd=1, relief="solid",
+                         highlightthickness=0, padx=8, pady=4,
+                         activebackground="#f9fafb")
+        self.btn_files = tk.Button(btns, text="选择文件（可多选）", width=16,
+                                   command=self.pick_files, **light_btn)
+        self.btn_folder = tk.Button(btns, text="选择文件夹（递归）", width=16,
+                                    command=self.pick_folder, **light_btn)
+        self.btn_go = tk.Button(btns, text="开始转换", width=12,
+                                command=self.start, bg=C_PRIMARY, fg="white",
+                                font=FB, bd=0, padx=10, pady=6,
+                                activebackground=C_PRIMARY_D, activeforeground="white")
         self.btn_stop = tk.Button(btns, text="停止队列", width=9,
-                                  command=self.request_stop, state="disabled")
-        self.btn_clear = tk.Button(btns, text="清空", width=6, command=self.clear)
-        self.btn_open_dir = tk.Button(btns, text="打开输出目录", width=12,
-                                      command=self.open_output_dir, state="disabled")
+                                  command=self.request_stop, state="disabled",
+                                  **light_btn)
+        self.btn_clear = tk.Button(btns, text="清空", width=6,
+                                   command=self.clear, **light_btn)
+        self.btn_open_dir = tk.Button(btns, text="打开输出目录", width=13,
+                                      command=self.open_output_dir, state="disabled",
+                                      **light_btn)
         for b in (self.btn_files, self.btn_folder, self.btn_go,
                   self.btn_stop, self.btn_clear):
             b.pack(side="left", padx=(0, 8))
         self.btn_open_dir.pack(side="right")
         self.sync_mode_ui()
 
-        progress_row = tk.Frame(self.root, bg="#f5f6f8")
-        progress_row.pack(fill="x", padx=20, pady=(0, 6))
-        tk.Label(progress_row, text="总进度", width=7, anchor="w",
-                 font=("Microsoft YaHei UI", 9), bg="#f5f6f8").pack(side="left")
-        self.progress = ttk.Progressbar(progress_row, mode="determinate",
+        # ---------- 进度与状态（卡片）----------
+        progress_card = tk.Frame(body, bg=C_CARD, highlightthickness=1,
+                                 highlightbackground=C_BORDER)
+        progress_card.pack(fill="x", pady=(0, 10))
+        pc = tk.Frame(progress_card, bg=C_CARD)
+        pc.pack(fill="x", padx=16, pady=(10, 4))
+        tk.Label(pc, text="总进度", width=9, anchor="w",
+                 font=F, bg=C_CARD, fg=C_SUB).pack(side="left")
+        self.progress = ttk.Progressbar(pc, mode="determinate",
                                         style="Accent.Horizontal.TProgressbar")
         self.progress.pack(side="left", fill="x", expand=True)
 
-        current_row = tk.Frame(self.root, bg="#f5f6f8")
-        current_row.pack(fill="x", padx=20, pady=(0, 6))
+        current_row = tk.Frame(progress_card, bg=C_CARD)
+        current_row.pack(fill="x", padx=16, pady=(4, 4))
         self.current_progress_label = tk.StringVar(value="当前文件：空闲")
         tk.Label(current_row, textvariable=self.current_progress_label,
-                 width=14, anchor="w", font=("Microsoft YaHei UI", 9),
-                 bg="#f5f6f8").pack(side="left")
-        # 空闲时使用 0 值确定进度，避免 Windows 主题在停止的动态进度条上
-        # 仍显示一小块绿色，让人误以为程序卡住。
+                 width=22, anchor="w", font=F, bg=C_CARD,
+                 fg=C_SUB).pack(side="left")
+        # 空闲用确定值 0，避免某些 Windows 主题在停止的动态进度条上残留绿块。
         self.current_progress = ttk.Progressbar(
             current_row, mode="determinate", maximum=100, value=0,
             style="Accent.Horizontal.TProgressbar")
         self.current_progress.pack(side="left", fill="x", expand=True)
 
         self.status = tk.StringVar(value="等待文件")
-        tk.Label(self.root, textvariable=self.status, anchor="w",
-                 font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
-                 fg="#374151").pack(fill="x", padx=20)
+        tk.Label(progress_card, textvariable=self.status, anchor="w",
+                 font=F, bg=C_CARD, fg=C_PRIMARY).pack(
+                     fill="x", padx=16, pady=(4, 10))
 
-        self.logbox = tk.Text(self.root, height=7, font=("Consolas", 9),
-                              bg="#ffffff", fg="#374151", relief="solid", bd=1)
-        self.logbox.pack(fill="both", expand=True, padx=20, pady=(6, 16))
+        # ---------- 日志（卡片 + 标题栏）----------
+        log_card = tk.Frame(body, bg=C_CARD, highlightthickness=1,
+                            highlightbackground=C_BORDER)
+        log_card.pack(fill="both", expand=True)
+        log_head = tk.Frame(log_card, bg=C_CARD)
+        log_head.pack(fill="x", padx=16, pady=(9, 0))
+        tk.Label(log_head, text="运行日志", font=FB, bg=C_CARD,
+                 fg=C_SUB).pack(side="left")
+        tk.Label(log_head, text="单张失败不中断整批", font=F, bg=C_CARD,
+                 fg=C_MUTED).pack(side="right")
+        self.logbox = tk.Text(log_card, height=6, font=("Consolas", 9),
+                              bg="#fbfcfe", fg=C_INK, relief="flat", bd=0,
+                              highlightthickness=0, padx=10, pady=8)
+        self.logbox.pack(fill="both", expand=True, padx=10, pady=(6, 10))
         self.logbox.configure(state="disabled")
 
     # -- helpers ------------------------------------------------------------
     def sync_mode_ui(self):
-        """让主按钮与拖放说明跟随当前业务模式。"""
+        """让主按钮、拖放说明与模式卡片高亮跟随当前业务模式。"""
         mode = self.output_mode.get()
         if not hasattr(self, "btn_go"):
             return
+        # 卡片选中态：高亮边框 + 序号徽章配色 + 标题着色。
+        if hasattr(self, "mode_cards"):
+            for card, num, rb, value, accent in self.mode_cards:
+                selected = value == mode
+                card.configure(
+                    highlightbackground=accent if selected else C_BORDER,
+                    highlightthickness=2 if selected else 1,
+                    bg=C_SOFT_PURPLE if (selected and accent == C_PURPLE)
+                    else (C_SOFT_BLUE if selected else C_CARD))
+                num.configure(bg=accent if selected else C_MUTED)
+                rb.configure(bg=(C_SOFT_PURPLE if accent == C_PURPLE else C_SOFT_BLUE)
+                             if selected else C_CARD,
+                             fg=accent if selected else C_INK)
         # 高级 A+ 不经过普通转换的同名策略，置灰避免误导。
         if hasattr(self, "conflict_row"):
             conflict_state = "disabled" if mode.startswith("高级 A+") else "normal"
@@ -999,26 +1084,26 @@ class App:
                 except Exception:
                     pass
         if mode.startswith("高级 A+"):
-            self.btn_go.configure(text="打开高级 A+", bg="#7c3aed",
-                                  activebackground="#6d28d9")
+            self.btn_go.configure(text="打开高级 A+", bg=C_PURPLE,
+                                  activebackground=C_PURPLE_D)
             self.drop.configure(
                 text="高级 A+ 连屏导图\n点击“打开高级 A+”进入专用工作区\n"
                      "支持电脑端、手机端和旧版文件夹匹配",
-                fg="#7c3aed")
+                fg=C_PURPLE, highlightbackground=C_PURPLE_LINE)
         elif mode.startswith("主副图画板"):
-            self.btn_go.configure(text="开始转换", bg="#2563eb",
-                                  activebackground="#1d4ed8")
+            self.btn_go.configure(text="开始转换", bg=C_PRIMARY,
+                                  activebackground=C_PRIMARY_D)
             self.drop.configure(
                 text="↓\n把主副图 PSD / PSB 拖到这里\n"
                      "自动建立源文件同名文件夹",
-                fg="#2563eb")
+                fg=C_PRIMARY, highlightbackground=C_BLUE_LINE)
         else:
-            self.btn_go.configure(text="开始转换", bg="#2563eb",
-                                  activebackground="#1d4ed8")
+            self.btn_go.configure(text="开始转换", bg=C_PRIMARY,
+                                  activebackground=C_PRIMARY_D)
             self.drop.configure(
                 text="↓\n把渲染 PSD / PSB 文件或文件夹拖到这里\n"
                      "JPG 默认保存在源文件旁边",
-                fg="#2563eb")
+                fg=C_PRIMARY, highlightbackground=C_BLUE_LINE)
 
     def log(self, msg: str):
         def _do():
@@ -1099,25 +1184,34 @@ class App:
     def open_a_plus(self):
         """打开独立的亚马逊高级 A+ 连屏切图窗口。"""
         tk = self.tk
+        F = ("Microsoft YaHei UI", 9)
+        FB = ("Microsoft YaHei UI", 9, "bold")
         win = tk.Toplevel(self.root)
         win.title("亚马逊高级 A+ 连屏导图")
-        win.geometry("680x480")
-        win.minsize(620, 430)
-        win.configure(bg="#f5f6f8")
+        win.geometry("720x520")
+        win.minsize(660, 460)
+        win.configure(bg=C_BG)
         win.transient(self.root)
 
-        tk.Label(win, text="亚马逊高级 A+ 连屏导图",
-                 font=("Microsoft YaHei UI", 16, "bold"),
-                 bg="#f5f6f8", fg="#1f2733").pack(
-                     anchor="w", padx=18, pady=(14, 2))
-        tk.Label(win,
-                 text="新版连屏图按旧版文件名和尺寸覆盖；也可按 1464×600 / 1200×900 自动切图",
-                 font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
-                 fg="#6b7280").pack(anchor="w", padx=18, pady=(0, 10))
+        # 品牌头（紫），与主界面呼应
+        ap_header = tk.Frame(win, bg=C_PURPLE, height=72)
+        ap_header.pack(fill="x")
+        ap_header.pack_propagate(False)
+        apb = tk.Frame(ap_header, bg=C_PURPLE)
+        apb.pack(side="left", padx=(18, 0))
+        tk.Label(apb, text="A+", font=("Segoe UI", 16, "bold"),
+                 bg=C_PURPLE_D, fg="white", width=3, pady=6).pack()
+        apt = tk.Frame(ap_header, bg=C_PURPLE)
+        apt.pack(side="left", padx=(12, 0), pady=12)
+        tk.Label(apt, text="亚马逊高级 A+ 连屏导图",
+                 font=("Microsoft YaHei UI", 14, "bold"),
+                 bg=C_PURPLE, fg="white").pack(anchor="w")
+        tk.Label(apt, text="按旧版文件名和尺寸原位覆盖，或按 1464×600 / 1200×900 自动切图",
+                 font=("Microsoft YaHei UI", 9), bg=C_PURPLE,
+                 fg="#ede9fe").pack(anchor="w", pady=(3, 0))
 
         files = []
-        listbox = tk.Listbox(win, height=7, font=("Microsoft YaHei UI", 9))
-        listbox.pack(fill="both", expand=True, padx=18, pady=(0, 8))
+        listbox = tk.Listbox(win, height=6)
 
         def refresh():
             listbox.delete(0, "end")
@@ -1150,21 +1244,38 @@ class App:
             except Exception:
                 pass
 
+        ap_body = tk.Frame(win, bg=C_BG)
+        ap_body.pack(fill="both", expand=True, padx=18, pady=(12, 12))
+
+        # 切图设置卡片
+        cfg = tk.Frame(ap_body, bg=C_CARD, highlightthickness=1,
+                       highlightbackground=C_BORDER)
+        cfg.pack(fill="x")
+        cfi = tk.Frame(cfg, bg=C_CARD)
+        cfi.pack(fill="x", padx=16, pady=(12, 10))
+
         mode = tk.StringVar(value="reference")
-        mode_row = tk.Frame(win, bg="#f5f6f8")
+        mode_row = tk.Frame(cfi, bg=C_CARD)
         # 最近一次参考目录作为默认值带入；用户改动后在导图时保存。
-        mode_row.pack(fill="x", padx=18, pady=(0, 6))
+        mode_row.pack(fill="x", pady=(0, 9))
+        tk.Label(mode_row, text="切图方式", width=9, anchor="w",
+                 font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
         tk.Radiobutton(mode_row, text="参考旧版文件夹（推荐）", variable=mode,
-                       value="reference", bg="#f5f6f8").pack(side="left")
+                       value="reference", bg=C_CARD, font=F, fg=C_INK,
+                       activebackground=C_CARD, selectcolor=C_SOFT_PURPLE,
+                       relief="flat").pack(side="left")
         tk.Radiobutton(mode_row, text="固定尺寸自动切图", variable=mode,
-                       value="fixed", bg="#f5f6f8").pack(side="left", padx=12)
+                       value="fixed", bg=C_CARD, font=F, fg=C_INK,
+                       activebackground=C_CARD, selectcolor=C_SOFT_PURPLE,
+                       relief="flat").pack(side="left", padx=12)
 
         reference = tk.StringVar(value=self.aplus_reference)
-        ref_row = tk.Frame(win, bg="#f5f6f8")
-        ref_row.pack(fill="x", padx=18, pady=(0, 7))
-        tk.Label(ref_row, text="旧版/输出文件夹：", bg="#f5f6f8").pack(side="left")
-        tk.Entry(ref_row, textvariable=reference).pack(
-            side="left", fill="x", expand=True, padx=5)
+        ref_row = tk.Frame(cfi, bg=C_CARD)
+        ref_row.pack(fill="x", pady=(0, 9))
+        tk.Label(ref_row, text="参考文件夹", width=9, anchor="w",
+                 font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
+        tk.Entry(ref_row, textvariable=reference, font=F, relief="solid",
+                 bd=1).pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         def pick_reference():
             selected = self.filedialog.askdirectory(
@@ -1172,28 +1283,49 @@ class App:
             if selected:
                 reference.set(selected)
 
-        tk.Button(ref_row, text="选择", command=pick_reference).pack(side="left")
+        tk.Button(ref_row, text="选择", command=pick_reference, font=F,
+                  bg=C_CARD, fg=C_INK, bd=1, relief="solid",
+                  activebackground="#f9fafb", padx=10).pack(side="left")
 
         quality = tk.IntVar(value=self.aplus_quality)
-        option_row = tk.Frame(win, bg="#f5f6f8")
-        option_row.pack(fill="x", padx=18, pady=(0, 8))
-        tk.Label(option_row, text="JPG 质量：", bg="#f5f6f8").pack(side="left")
+        option_row = tk.Frame(cfi, bg=C_CARD)
+        option_row.pack(fill="x")
+        tk.Label(option_row, text="JPG 质量", width=9, anchor="w",
+                 font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
         tk.Spinbox(option_row, from_=80, to=100, textvariable=quality,
-                   width=5).pack(side="left")
-        tk.Label(option_row, text="  切图顺序：从上到下；不缩放、不留缝",
-                 bg="#f5f6f8", fg="#6b7280").pack(side="left")
+                   width=5, font=F, relief="solid", bd=1).pack(side="left")
+        tk.Label(option_row, text="从上到下切图 · 不缩放 · 不留缝",
+                 font=F, bg=C_CARD, fg=C_MUTED).pack(side="left", padx=12)
+
+        # 图片列表（拖放目标）——白卡片 + 标题，空列表也清晰可见
+        list_card = tk.Frame(ap_body, bg=C_CARD, highlightthickness=1,
+                             highlightbackground=C_BORDER)
+        list_card.pack(in_=ap_body, fill="both", expand=True, pady=(12, 4))
+        lh = tk.Frame(list_card, bg=C_CARD)
+        lh.pack(fill="x", padx=12, pady=(8, 0))
+        tk.Label(lh, text="连屏图列表", font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
+        tk.Label(lh, text="可拖入图片", font=F, bg=C_CARD,
+                 fg=C_MUTED).pack(side="right")
+        listbox.configure(bg=C_CARD, fg=C_INK, relief="flat",
+                          highlightthickness=0, font=("Consolas", 9))
+        listbox.pack(in_=list_card, fill="both", expand=True, padx=8, pady=(4, 8))
 
         status = tk.StringVar(value="请添加新版连屏图")
-        tk.Label(win, textvariable=status, anchor="w", bg="#f5f6f8",
-                 fg="#374151").pack(fill="x", padx=18)
-        buttons = tk.Frame(win, bg="#f5f6f8")
-        buttons.pack(fill="x", padx=18, pady=(8, 14))
+        tk.Label(ap_body, textvariable=status, anchor="w", bg=C_BG,
+                 fg=C_PRIMARY, font=F).pack(fill="x", pady=(4, 0))
+        buttons = tk.Frame(ap_body, bg=C_BG)
+        buttons.pack(fill="x", pady=(10, 0))
+        lbtn = dict(font=F, bg=C_CARD, fg=C_INK, bd=1, relief="solid",
+                    highlightthickness=0, padx=10, pady=5,
+                    activebackground="#f9fafb")
         tk.Button(buttons, text="选择新版连屏图（可多选）",
-                  command=pick_images).pack(side="left")
-        tk.Button(buttons, text="清空", command=lambda: (files.clear(), refresh())).pack(
-                      side="left", padx=7)
+                  command=pick_images, **lbtn).pack(side="left")
+        tk.Button(buttons, text="清空", command=lambda: (files.clear(), refresh()),
+                  **lbtn).pack(side="left", padx=7)
 
-        start_button = tk.Button(buttons, text="开始导图", bg="#7c3aed", fg="white")
+        start_button = tk.Button(buttons, text="开始导图", bg=C_PURPLE, fg="white",
+                                 font=FB, bd=0, padx=16, pady=6,
+                                 activebackground=C_PURPLE_D, activeforeground="white")
         start_button.pack(side="right")
 
         def run_worker(selected, selected_mode, folder, jpg_quality):
