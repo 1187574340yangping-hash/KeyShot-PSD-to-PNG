@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PSD / PSB 一键转 PNG · JPG  ·  增强版 v2
+PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.3
 
 面向「PS 大画板 / 大画布」场景：画布很大、内容只占中间一小块、
 四周大量透明或白色留白；文件常常是 1~2 GB 的 .psb。
@@ -11,8 +11,9 @@ PSD / PSB 一键转 PNG · JPG  ·  增强版 v2
   2. 导出前自动裁切到内容边界（透明边 / 纯色边 / 两者 / 不裁）
   3. 导出格式可勾选：只要 PNG、只要 JPG、或两者都要
   4. 中文 / 全角括号路径、文件大小与逐张进度、单张失败不中断整批
+  5. 默认导出一张完整合成 JPG，并在同名文件夹写出图层名称清单
 
-仍然保持原版承诺：输出在源文件旁边、不覆盖同名、不修改原稿、
+仍然保持原版承诺：输出集中在源文件同名文件夹、不覆盖同名、不修改原稿、
 后台线程转换、COM 显式释放、关掉 Photoshop 全部弹窗。
 
 用法：
@@ -33,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.2"
+VERSION = "2.3"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -41,6 +42,7 @@ STAGE_INFO = {
     "connecting": (3, "连接 Photoshop"),
     "opening": (8, "打开大文件"),
     "preparing": (30, "转换色彩/位深"),
+    "layers": (38, "读取图层名称"),
     "trimming": (45, "裁切画布"),
     "saving_png": (60, "保存 PNG"),
     "saving_jpg": (80, "拼合并保存 JPG"),
@@ -68,7 +70,8 @@ def js_escape(s) -> str:
             .replace("\n", "\\n"))
 
 
-def build_script(psd, png, jpg, trim_mode, formats, progress_file=None) -> str:
+def build_script(psd, png, jpg, trim_mode, formats, progress_file=None,
+                 layer_list=None) -> str:
     """
     生成交给 Photoshop.Application.DoJavaScript 执行的 ExtendScript。
 
@@ -89,10 +92,10 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None) -> str:
 
     trim_js = {
         "none": "",
-        "transparent": "d.trim(TrimType.TRANSPARENT,true,true,true,true);",
-        "topleft": "d.trim(TrimType.TOPLEFT,true,true,true,true);",
-        "both": ("d.trim(TrimType.TRANSPARENT,true,true,true,true);"
-                 "d.trim(TrimType.TOPLEFT,true,true,true,true);"),
+        "transparent": "try{d.trim(TrimType.TRANSPARENT,true,true,true,true);}catch(e){}",
+        "topleft": "try{d.trim(TrimType.TOPLEFT,true,true,true,true);}catch(e){}",
+        "both": ("try{d.trim(TrimType.TRANSPARENT,true,true,true,true);}catch(e){}"
+                 "try{d.trim(TrimType.TOPLEFT,true,true,true,true);}catch(e){}"),
     }.get(trim_mode, "")
 
     png_js = ""
@@ -114,6 +117,18 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None) -> str:
                   "jo.formatOptions=FormatOptions.STANDARDBASELINE;"
                   f"d.saveAs(new File('{js_escape(jpg)}'),jo,true,Extension.LOWERCASE);")
 
+    layer_js = ""
+    if layer_list:
+        layer_js = (
+            f"{stage('layers')}"
+            f"var lf=new File('{js_escape(layer_list)}');lf.encoding='UTF8';"
+            "if(lf.open('w')){"
+            "function dl(c,n){for(var i=0;i<c.layers.length;i++){"
+            "var l=c.layers[i],p='';for(var j=0;j<n;j++)p+='  ';"
+            "lf.writeln(p+l.name);if(l.typename=='LayerSet')dl(l,n+1);}}"
+            "lf.writeln('PSD/PSB: '+d.name);"
+            "lf.writeln('图层列表（含分组）:');dl(d,0);lf.close();}")
+
     return (
         "app.displayDialogs=DialogModes.NO;"
         f"{progress_js}"
@@ -127,6 +142,7 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None) -> str:
         "if(d.bitsPerChannel==BitsPerChannelType.THIRTYTWO)"
         "d.bitsPerChannel=BitsPerChannelType.SIXTEEN;"
         "if(d.mode!=DocumentMode.RGB)d.changeMode(ChangeMode.RGB);"
+        f"{layer_js}"
         f"{stage('trimming')}{trim_js}"
         f"{png_js}"
         f"{jpg_js}"
@@ -170,7 +186,9 @@ def unique_outputs(src: Path, formats) -> dict:
     阶梯：name.png/.jpg → name_PNG.png/.jpg → name_PNG_2.png/.jpg → ...
     """
     fmts = set(formats or ())
-    directory = src.parent if str(src.parent) else Path(".")
+    # 每个源文件使用同名文件夹，所有输出集中存放，避免源目录散落图片。
+    directory = (src.parent if str(src.parent) else Path(".")) / src.stem
+    directory.mkdir(parents=True, exist_ok=True)
     stem = src.stem
 
     for i in range(10000):
@@ -181,6 +199,7 @@ def unique_outputs(src: Path, formats) -> dict:
         if "jpg" in fmts:
             out["jpg"] = directory / (stem + suffix + ".jpg")
         if out and all(not p.exists() for p in out.values()):
+            out["layers"] = directory / "图层列表.txt"
             return out
     raise RuntimeError("同名输出过多（超过 10000 个），请先清理目录")
 
@@ -242,7 +261,8 @@ def convert_one(psd: Path, outputs: dict, trim_mode: str, formats,
         app = photoshop()
         script = build_script(str(psd),
                               outputs.get("png"), outputs.get("jpg"),
-                              trim_mode, formats, marker if progress_cb else None)
+                              trim_mode, formats, marker if progress_cb else None,
+                              outputs.get("layers"))
         try:
             # Photoshop 刚启动、正在载入插件或有短暂模态状态时会返回
             # RPC_E_SERVERCALL_RETRYLATER (0x8001010A)。大文件场景下等待后
@@ -355,8 +375,19 @@ def selftest() -> int:
               o2["png"].name == "NTT72-D_PNG.png" and
               o2["jpg"].name == "NTT72-D_PNG.jpg",
               f"{sorted(o1.keys())} -> {o2['png'].name} / {o2['jpg'].name}")
+        check("输出进入源文件同名文件夹",
+              o1["jpg"].parent.name == "NTT72-D")
+        check("生成图层清单路径",
+              o1["layers"].name == "图层列表.txt")
         o3 = unique_outputs(src, ("jpg",))
-        check("只选 JPG 时只占 .jpg 名额", set(o3) == {"jpg"})
+        check("只选 JPG 时仅输出 JPG 与图层清单",
+              set(o3) == {"jpg", "layers"})
+
+    js_layers = build_script(tricky, None, r"F:\out\x.jpg", "none", ("jpg",),
+                             None, r"F:\out\图层列表.txt")
+    check("递归读取图层与分组名称",
+          "function dl" in js_layers and "LayerSet" in js_layers and
+          "图层列表.txt" in js_layers)
 
     ok = all(c["ok"] for c in checks)
     report = {
@@ -445,7 +476,7 @@ class App:
 
         self.drop = tk.Label(self.root,
                             text="↓\n把 PSD / PSB 文件或文件夹拖到这里\n"
-                                 "输出保存在原文件旁边，不修改原稿",
+                                 "自动建同名文件夹，不修改原稿",
                             font=("Microsoft YaHei UI", 12),
                             bg="#ffffff", fg="#2b6cb0", relief="solid", bd=1,
                             justify="center")
@@ -468,7 +499,7 @@ class App:
         row2.pack(fill="x", padx=20, pady=(0, 8))
         tk.Label(row2, text="导出格式：", font=("Microsoft YaHei UI", 9),
                  bg="#f5f6f8").pack(side="left")
-        self.var_png = tk.BooleanVar(value=True)
+        self.var_png = tk.BooleanVar(value=False)
         self.var_jpg = tk.BooleanVar(value=True)
         tk.Checkbutton(row2, text="PNG（保留透明）", variable=self.var_png,
                        font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
@@ -572,10 +603,10 @@ class App:
         if self.busy:
             return
         self.trim.set(TRIM_MODES["none"])
-        self.var_png.set(True)
-        self.var_jpg.set(False)
-        self.status.set("快速预设：不裁切，只输出 PNG")
-        self.log("已启用快速预设：不裁切，只输出 PNG；文件更快，画布尺寸保持不变。")
+        self.var_png.set(False)
+        self.var_jpg.set(True)
+        self.status.set("快速预设：不裁切，只输出 JPG")
+        self.log("已启用快速预设：不裁切，只输出 JPG；文件更快，画布尺寸保持不变。")
 
     def add_paths(self, paths):
         if self.busy:

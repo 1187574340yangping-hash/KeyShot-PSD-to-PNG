@@ -1,6 +1,6 @@
 # PSD / PSB 一键转 PNG · JPG
 
-> 大画板、四周全是留白？拖进去，自动裁到内容边界，顺手出 PNG 和 JPG。原稿一个字节都不动。
+> 大画板、四周全是留白？拖进去，默认导出一张完整合成 JPG 和图层名称清单。原稿一个字节都不动。
 
 `Windows` · `Photoshop COM / ExtendScript` · `Python + tkinter（v2）` · `MIT`
 
@@ -10,7 +10,7 @@
 
 | | 程序 | 能力 |
 | --- | --- | --- |
-| **v2（推荐）** | [`dist/PSD-PSB一键转PNG-JPG.exe`](dist/PSD-PSB一键转PNG-JPG.exe) | **支持 .psd + .psb**、自动裁切到内容边界、PNG / JPG 可勾选、大文件进度提示 |
+| **v2.3（推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | **支持 .psd + .psb**、默认合成 JPG、图层名称清单、同名输出文件夹、批量拖放与大文件进度 |
 | **v2.2 目录修复版（本机推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 阶段进度、快速预设、停止队列、批量拖入加固；解压后运行 `PSD一键转PNG工具/PSDTool.exe` |
 | v1（原版，保留） | [`dist/PSD一键转PNG.exe`](dist/PSD一键转PNG.exe)（13 KB .NET） | 只认 .psd、不裁切、只出 PNG |
 
@@ -33,7 +33,7 @@
 
 1. 下载 [`dist/PSD-PSB一键转PNG-JPG.exe`](dist/PSD-PSB一键转PNG-JPG.exe)，双击打开（无需安装、无需联网、无配置文件）。
 2. 把 **PSD / PSB 文件或整个文件夹**拖进窗口；也可以点「选择文件」多选或「选择文件夹」递归。
-3. 选**裁切方式**（默认「裁掉透明边」）和**导出格式**（默认 PNG + JPG 都勾），点「开始转换」。
+3. 选**裁切方式**（默认「裁掉透明边」）和**导出格式**（默认只勾 JPG），点「开始转换」。程序会新建与源文件同名的文件夹，保存一张完整合成 JPG 和 `图层列表.txt`。
 
 > 更快：把文件 / 文件夹直接拖到 EXE **图标**上启动，会自动开始转换。
 
@@ -159,7 +159,7 @@ flowchart TD
 | 10 | `saveAs(..., true, Extension.LOWERCASE)` | 以副本另存、扩展名统一小写，避免 `.PNG` 在大小写敏感的引擎/CI 里读不到 |
 | 11 | `finally { d.close(DONOTSAVECHANGES) }` | 无论成功失败都关闭且不保存：既保证原稿不被改，也避免批量转换后 Photoshop 里堆几十个大文档吃满内存 |
 | 12 | 路径 `js_escape`（`\`→`\\`、`'`→`\'`） | Windows 反斜杠、中文 / 全角括号 / 带单引号的目录名会破坏 JS 字符串字面量，表现为「点了没反应」 |
-| 13 | 输出写在源文件旁边、成对共用同一个 stem | 少一次「选输出目录」的决策；PNG 与 JPG 同名便于配对管理 |
+| 13 | 每个源文件自动创建同名输出文件夹 | JPG/PNG 与图层清单集中存放，避免源素材目录散落大量导出文件 |
 | 14 | 同名自动 `_PNG` / `_PNG_2` | 反复重跑、增量补图时不会把上一版成果覆盖掉 |
 | 15 | 文件夹递归 + 大小写不敏感去重 | 一次选根目录覆盖整个项目；混合输入容易把同一文件计两次 |
 | 16 | 后台线程转换 + 每线程 `CoInitialize()` | COM 必须在初始化过的单元里调用；大文件转换不能冻结窗口；UI 只由主线程更新 |
@@ -171,19 +171,19 @@ flowchart TD
 
 ## 输出规则
 
-以 `NTT72-D.psb` 为例（默认 PNG + JPG 都勾）：
+以 `NTT72-D.psb` 为例（默认只输出 JPG）：
 
 | 情况 | 输出 |
 | --- | --- |
-| 首次 | `NTT72-D.png` + `NTT72-D.jpg` |
-| 任一已存在 | `NTT72-D_PNG.png` + `NTT72-D_PNG.jpg` |
-| 再跑一次 | `NTT72-D_PNG_2.png` + `NTT72-D_PNG_2.jpg` … 递增 |
-| 只勾 PNG | 只生成 `NTT72-D.png` |
-| 只勾 JPG | 只生成 `NTT72-D.jpg` |
+| 默认首次 | `NTT72-D/NTT72-D.jpg` + `NTT72-D/图层列表.txt` |
+| JPG 已存在 | `NTT72-D/NTT72-D_PNG.jpg` + 更新图层清单 |
+| 勾选 PNG + JPG | 两种图片进入同一个 `NTT72-D/` 文件夹 |
+| 再次重跑 | 图片自动使用 `_PNG_2` 等递增后缀，不覆盖旧图 |
 
 - PNG 保留 alpha（透明背景）；JPG 拼合后用白底填充透明区域、质量 12。
 - 裁切后画布变小，输出尺寸 = 内容边界尺寸；选「不裁切」则保持原始画布。
-- 不生成日志文件或中间文件，不改动源 PSD/PSB。
+- `图层列表.txt` 按分组层级递归记录所有图层名称；不逐层导出图片。
+- 不改动源 PSD/PSB。
 - 中文、空格、全角括号、单引号路径均可处理（已转义）。
 
 ---
@@ -242,7 +242,11 @@ python build_exe.py --onedir
 
 > 2026-11-19 v2.1：拖放只注册一个 TkDND 目标并明确返回复制动作，增加 `%TEMP%\psdtool_gui_error.log` 回调异常记录；界面新增“当前文件”动态进度和批量“总进度”。
 
-> 2026-11-19 v2.2：当前文件显示“连接 Photoshop → 打开大文件 → 转换色彩/位深 → 裁切画布 → 保存 PNG/JPG → 关闭文档”的真实阶段；新增“快速预设”（不裁切、只出 PNG）和“停止队列”（当前文件安全完成后停止）。
+> 2026-11-19 v2.2：当前文件显示“连接 Photoshop → 打开大文件 → 转换色彩/位深 → 裁切画布 → 保存 PNG/JPG → 关闭文档”的真实阶段；新增“快速预设”（不裁切、只出 JPG）和“停止队列”（当前文件安全完成后停止）。
+
+> 2026-11-19 v2.3：默认只导出一张完整合成 JPG；每个 PSD/PSB 自动新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。PNG 仍可手动勾选。
+
+> 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。
 

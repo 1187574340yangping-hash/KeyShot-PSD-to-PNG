@@ -76,9 +76,9 @@ python build_exe.py
 | 函数 / 类 | 职责 |
 | --- | --- |
 | `js_escape(s)` | Windows 路径 → JS 字符串字面量（`\` → `\\`，`'` → `\'`） |
-| `build_script(psd, png, jpg, trim_mode, formats)` | 拼出完整 ExtendScript，只给勾中的格式生成保存代码 |
+| `build_script(...)` | 拼出完整 ExtendScript，按选择保存图片并递归写出图层名称 |
 | `collect(paths)` | 文件 / 文件夹混合收集，递归、过滤 `.psd` / `.psb`、大小写不敏感去重 |
-| `unique_outputs(src, formats)` | 成对分配 PNG / JPG 输出路径，整组避开同名，冲突加 `_PNG` / `_PNG_2` |
+| `unique_outputs(src, formats)` | 创建源文件同名文件夹，分配 JPG/PNG 与 `图层列表.txt`，图片冲突时递增后缀 |
 | `human_size(n)` | 大文件友好体积显示（1~2 GB 时给进度提示） |
 | `photoshop()` | `win32com.client.Dispatch("Photoshop.Application")` |
 | `convert_one(...)` | 单张转换：每线程 `CoInitialize()` → `DoJavaScript`；阶段标记、Photoshop 忙自动重试 → `CoUninitialize()` |
