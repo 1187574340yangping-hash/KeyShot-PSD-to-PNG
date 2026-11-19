@@ -29,10 +29,11 @@ import tempfile
 import threading
 import time
 import traceback
+from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.0"
+VERSION = "2.1"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -334,6 +335,7 @@ class App:
         self.busy = False
 
         self.root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
+        self.root.report_callback_exception = self.report_callback_exception
         self.root.title(APP_TITLE)
         self.root.geometry("640x580")
         self.root.minsize(580, 520)
@@ -347,8 +349,6 @@ class App:
             try:
                 self.drop.drop_target_register(DND_FILES)
                 self.drop.dnd_bind("<<Drop>>", self.on_drop)
-                self.root.drop_target_register(DND_FILES)
-                self.root.dnd_bind("<<Drop>>", self.on_drop)
                 self.dnd_ok = True
             except Exception:
                 pass
@@ -421,8 +421,19 @@ class App:
         for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
             b.pack(side="left", padx=(0, 8))
 
-        self.progress = ttk.Progressbar(self.root, mode="determinate")
-        self.progress.pack(fill="x", padx=20, pady=(0, 6))
+        progress_row = tk.Frame(self.root, bg="#f5f6f8")
+        progress_row.pack(fill="x", padx=20, pady=(0, 6))
+        tk.Label(progress_row, text="总进度", width=7, anchor="w",
+                 font=("Microsoft YaHei UI", 9), bg="#f5f6f8").pack(side="left")
+        self.progress = ttk.Progressbar(progress_row, mode="determinate")
+        self.progress.pack(side="left", fill="x", expand=True)
+
+        current_row = tk.Frame(self.root, bg="#f5f6f8")
+        current_row.pack(fill="x", padx=20, pady=(0, 6))
+        tk.Label(current_row, text="当前文件", width=7, anchor="w",
+                 font=("Microsoft YaHei UI", 9), bg="#f5f6f8").pack(side="left")
+        self.current_progress = ttk.Progressbar(current_row, mode="indeterminate")
+        self.current_progress.pack(side="left", fill="x", expand=True)
 
         self.status = tk.StringVar(value="等待文件")
         tk.Label(self.root, textvariable=self.status, anchor="w",
@@ -446,6 +457,20 @@ class App:
     def ui(self, fn):
         try:
             self.root.after(0, fn)
+        except Exception:
+            pass
+
+    def report_callback_exception(self, exc_type, exc, tb):
+        """记录 Tk 回调异常，避免拖放故障只表现为窗口消失。"""
+        detail = "".join(traceback.format_exception(exc_type, exc, tb))
+        try:
+            path = Path(tempfile.gettempdir()) / "psdtool_gui_error.log"
+            path.write_text(detail, encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            self.log("! 界面回调异常，详情已写入 %TEMP%\\psdtool_gui_error.log")
+            self.messagebox.showerror(APP_TITLE, str(exc))
         except Exception:
             pass
 
@@ -490,6 +515,8 @@ class App:
             self.add_paths(paths)
         except Exception:
             self.log("! 拖放数据解析失败，请改用按钮选择")
+        # TkDND 回调必须返回一个动作；返回 None 可能被 Tcl 当作无效动作。
+        return getattr(event, "action", "copy") or "copy"
 
     def pick_files(self):
         paths = self.filedialog.askopenfilenames(
@@ -529,6 +556,7 @@ class App:
             b.configure(state="disabled")
         self.progress["maximum"] = len(self.files)
         self.progress["value"] = 0
+        self.current_progress.stop()
 
         files = list(self.files)
         trim_mode = self.trim_key()
@@ -549,6 +577,7 @@ class App:
             self.ui(lambda i=i, name=name, size=size: self.status.set(
                 f"[{i}/{len(files)}] 正在处理 {name}  ({human_size(size)})"
                 " — 大画板请耐心等待"))
+            self.ui(lambda: self.current_progress.start(12))
             try:
                 outputs = unique_outputs(src, formats)
                 convert_one(src, outputs, trim_mode, formats)
@@ -562,6 +591,7 @@ class App:
                 if "Photoshop" in msg or "COM" in msg.upper():
                     msg = "Photoshop 忙或无法读取文件：" + msg
                 self.ui(lambda name=name, msg=msg: self.log(f"× {name}：{msg}"))
+            self.ui(lambda: self.current_progress.stop())
             self.ui(lambda i=i: self.progress.configure(value=i))
 
         done_ok, done_fail = ok, failed
@@ -569,6 +599,7 @@ class App:
 
     def finish(self, ok, failed):
         self.busy = False
+        self.current_progress.stop()
         for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
             b.configure(state="normal")
         self.status.set(f"完成：成功 {ok} 个，失败 {failed} 个")
@@ -626,6 +657,8 @@ def main():
     ap = argparse.ArgumentParser(description=APP_TITLE)
     ap.add_argument("--selftest", action="store_true", help="不启动 Photoshop 的自检")
     ap.add_argument("--probe", action="store_true", help="创建 GUI 后自动退出，用于验证冻结包")
+    ap.add_argument("--drop-probe", nargs="+", metavar="PATH",
+                    help="模拟一次拖放回调后退出，用于验证冻结包拖放入口")
     ap.add_argument("--cli", nargs="+", metavar="PATH", help="命令行批量转换")
     ap.add_argument("--trim", choices=list(TRIM_MODES), default="transparent")
     ap.add_argument("--formats", nargs="+", choices=list(FORMATS),
@@ -636,7 +669,6 @@ def main():
     if args.selftest:
         return selftest()
     if args.probe:
-        import tempfile
         try:
             app = App()
             app.root.after(800, app.root.destroy)
@@ -648,6 +680,22 @@ def main():
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result.get("gui") == "OK" else 1
+    if args.drop_probe:
+        try:
+            app = App()
+            event = SimpleNamespace(data=app.root.tk.call("list", *args.drop_probe),
+                                    action="copy")
+            action = app.on_drop(event)
+            result = {"drop": "OK" if len(app.files) >= 1 else "FAIL",
+                      "action": action, "count": len(app.files),
+                      "names": [p.name for p in app.files],
+                      "dnd": app.dnd_ok}
+            app.root.destroy()
+        except Exception:
+            result = {"drop": "FAIL", "error": traceback.format_exc()}
+        (Path(tempfile.gettempdir()) / "psdtool_drop_probe.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return 0 if result.get("drop") == "OK" else 1
     if args.cli:
         formats = tuple(dict.fromkeys(args.formats))
         if not formats:

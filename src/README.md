@@ -47,6 +47,7 @@ python src/psd_to_png_gui.py --cli "F:\杨平-产品图片\...\NTT72" --formats 
 | `--formats png jpg` | 导出格式，可只给一个；两个都不给会报错 |
 | `--trim {transparent,topleft,both,none}` | 裁切策略，默认 `transparent` |
 | `--probe` | 创建 GUI 后 800ms 自动退出，写 `%TEMP%\psdtool_probe.json`，用于验证冻结包能否正常起窗口 |
+| `--drop-probe PATH` | 模拟一次拖放回调，写 `%TEMP%\psdtool_drop_probe.json`，用于验证冻结包拖放入口 |
 | `--selftest` | 纯逻辑自检 |
 | `--version` | 输出 `2.0` |
 
