@@ -105,7 +105,7 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None,
         两者     → 先存 PNG（保留透明），再拼合填白存 JPG
     """
     fmts = set(formats or ())
-    progress_js = ""
+    progress_js = "function pg(s){}"
     if progress_file:
         progress_js = (
             f"var pf=new File('{js_escape(progress_file)}');"
@@ -192,6 +192,57 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None,
     )
 
 
+def build_artboard_script(psd, output_dir, manifest, progress_file=None) -> str:
+    """生成“逐画板导出 JPG”的 ExtendScript，文件名直接使用画板名称。"""
+    progress_js = "function pg(s){}"
+    if progress_file:
+        progress_js = (
+            f"var pf=new File('{js_escape(progress_file)}');"
+            "function pg(s){try{pf.open('a');pf.writeln(s);pf.close();}catch(e){}}")
+
+    return (
+        "app.displayDialogs=DialogModes.NO;" + progress_js +
+        "var d=null;var mf=null;"
+        "function cleanName(s){return s.replace(/[\\\\\\/:*?\"<>|]/g,'_')"
+        ".replace(/^\\s+|\\s+$/g,'')||'画板';}"
+        "function artboardRect(layer){"
+        "var r=new ActionReference();r.putIdentifier(charIDToTypeID('Lyr '),layer.id);"
+        "var x=executeActionGet(r),e=stringIDToTypeID('artboardEnabled'),"
+        "k=stringIDToTypeID('artboard');"
+        "if(!x.hasKey(e)||!x.getBoolean(e)||!x.hasKey(k)){"
+        "if(layer.typename!='LayerSet')return null;var b=layer.bounds;"
+        "return [b[0].as('px'),b[1].as('px'),b[2].as('px'),b[3].as('px')];}"
+        "var a=x.getObjectValue(k),q=a.getObjectValue(stringIDToTypeID('artboardRect'));"
+        "return [q.getUnitDoubleValue(stringIDToTypeID('left')),"
+        "q.getUnitDoubleValue(stringIDToTypeID('top')),"
+        "q.getUnitDoubleValue(stringIDToTypeID('right')),"
+        "q.getUnitDoubleValue(stringIDToTypeID('bottom'))];}"
+        "try{pg('opening');d=app.open(new File('" + js_escape(psd) + "'));"
+        "mf=new File('" + js_escape(manifest) + "');mf.encoding='UTF8';mf.open('w');"
+        "var count=0,baseState=d.activeHistoryState;pg('layers');"
+        "for(var i=0;i<d.layers.length;i++){var rect=artboardRect(d.layers[i]);"
+        "if(!rect)continue;"
+        "var n=cleanName(d.layers[i].name),out=new File('" +
+        js_escape(output_dir) + "/'+n+'.jpg'),z=2;"
+        "while(out.exists){out=new File('" + js_escape(output_dir) +
+        "/'+n+'_'+z+'.jpg');z++;}"
+        "try{for(var j=0;j<d.layers.length;j++){"
+        "if(d.layers[j].typename=='LayerSet')d.layers[j].visible=(j==i);}app.refresh();"
+        "d.crop(rect);d.flatten();"
+        "if(d.mode!=DocumentMode.RGB)d.changeMode(ChangeMode.RGB);"
+        "if(d.bitsPerChannel!=BitsPerChannelType.EIGHT)"
+        "d.bitsPerChannel=BitsPerChannelType.EIGHT;"
+        "var jo=new JPEGSaveOptions();jo.quality=12;jo.embedColorProfile=true;"
+        "jo.formatOptions=FormatOptions.STANDARDBASELINE;pg('saving_jpg');"
+        "d.saveAs(out,jo,true,Extension.LOWERCASE);mf.writeln(out.fsName);count++;"
+        "}finally{d.activeHistoryState=baseState;}}"
+        "if(count===0)throw new Error('没有检测到 Photoshop 画板或顶层图层组');"
+        "}catch(err){try{if(mf)mf.writeln('ERROR:'+err.toString()+' line='+err.line);"
+        "}catch(we){}throw err;}finally{try{if(mf)mf.close();}catch(e){}pg('closing');"
+        "if(d)d.close(SaveOptions.DONOTSAVECHANGES);pg('done');}"
+    )
+
+
 def collect(paths) -> list:
     """文件与文件夹混合输入 → 递归收集 .psd / .psb → 大小写不敏感去重。"""
     found = []
@@ -242,8 +293,6 @@ def unique_outputs(src: Path, formats, use_folder=False, conflict="number"):
             out["jpg"] = directory / (stem + suffix + ".jpg")
         available = out and all(not p.exists() for p in out.values())
         if conflict == "overwrite" or available:
-            layer_name = "图层列表.txt" if use_folder else f"{src.stem}_图层列表.txt"
-            out["layers"] = directory / layer_name
             return out
         if conflict == "skip":
             return None
@@ -581,6 +630,81 @@ def convert_one(psd: Path, outputs: dict, trim_mode: str, formats,
         pythoncom.CoUninitialize()
 
 
+def convert_artboards(psd: Path, output_dir: Path, progress_cb=None) -> list:
+    """把 PSD/PSB 顶层画板逐个导出成以画板名命名的最高质量 JPG。"""
+    import pythoncom
+
+    pythoncom.CoInitialize()
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    token = f"{os.getpid()}_{threading.get_ident()}"
+    marker = Path(tempfile.gettempdir()) / f"psdtool_progress_{token}.txt"
+    manifest = Path(tempfile.gettempdir()) / f"psdtool_artboards_{token}.txt"
+    stop_monitor = threading.Event()
+    monitor = None
+    emitted_count = [0]
+    try:
+        marker.unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
+        if progress_cb:
+            progress_cb("connecting")
+
+            def watch_progress():
+                while not stop_monitor.wait(0.2):
+                    try:
+                        stages = marker.read_text(encoding="utf-8").splitlines()
+                    except (OSError, UnicodeError):
+                        continue
+                    for current in stages[emitted_count[0]:]:
+                        if current:
+                            progress_cb(current)
+                        emitted_count[0] += 1
+
+            monitor = threading.Thread(target=watch_progress, daemon=True)
+            monitor.start()
+        app = photoshop()
+        script = build_artboard_script(
+            str(psd), str(output_dir), str(manifest),
+            marker if progress_cb else None)
+        try:
+            for attempt in range(60):
+                try:
+                    app.DoJavaScript(script)
+                    break
+                except Exception as exc:
+                    code = getattr(exc, "hresult", None)
+                    if code is None and getattr(exc, "args", None):
+                        code = exc.args[0]
+                    if code not in (-2147417846, -2147418111) or attempt == 59:
+                        raise
+                    time.sleep(2)
+        finally:
+            del app
+        try:
+            lines = [line for line in
+                     manifest.read_text(encoding="utf-8-sig").splitlines()
+                     if line.strip()]
+        except (OSError, UnicodeError):
+            lines = []
+        errors = [line[6:] for line in lines if line.startswith("ERROR:")]
+        if errors:
+            raise RuntimeError("画板导出失败：" + errors[-1])
+        outputs = [Path(line) for line in lines if not line.startswith("ERROR:")]
+        if not outputs:
+            raise RuntimeError("没有检测到可导出的 Photoshop 画板")
+        return outputs
+    finally:
+        stop_monitor.set()
+        if monitor:
+            monitor.join(timeout=1)
+        for temp_path in (marker, manifest):
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        pythoncom.CoUninitialize()
+
+
 # ---------------------------------------------------------------------------
 # 自检（不启动 Photoshop，不读取用户素材内容）
 # ---------------------------------------------------------------------------
@@ -664,21 +788,24 @@ def selftest() -> int:
               f"{sorted(o1.keys())} -> {o2['png'].name} / {o2['jpg'].name}")
         check("渲染模式输出到源文件旁",
               o1["jpg"].parent == src.parent)
-        check("渲染模式图层清单不与其他 PSD 冲突",
-              o1["layers"].name == "NTT72-D_图层列表.txt")
         folder_outputs = unique_outputs(src, ("jpg",), use_folder=True)
         check("主副图画板模式进入同名文件夹",
-              folder_outputs["jpg"].parent.name == "NTT72-D" and
-              folder_outputs["layers"].name == "图层列表.txt")
+              folder_outputs["jpg"].parent.name == "NTT72-D")
         o3 = unique_outputs(src, ("jpg",))
-        check("只选 JPG 时仅输出 JPG 与图层清单",
-              set(o3) == {"jpg", "layers"})
+        check("渲染模式只选 JPG 时不生成图层文本",
+              set(o3) == {"jpg"})
 
     js_layers = build_script(tricky, None, r"F:\out\x.jpg", "none", ("jpg",),
                              None, r"F:\out\图层列表.txt")
     check("递归读取图层与分组名称",
           "function dl" in js_layers and "LayerSet" in js_layers and
           "图层列表.txt" in js_layers)
+
+    js_artboards = build_artboard_script(
+        r"F:\主副图.psd", r"F:\主副图", r"F:\画板清单.txt")
+    check("画板模式按画板名逐张导出 JPG",
+          "artboardRect" in js_artboards and "d.layers[i].name" in js_artboards
+          and "JPEGSaveOptions" in js_artboards)
 
     # --- v2.8：三种同名文件策略、PNG/JPG 共用后缀 ---
     with tempfile.TemporaryDirectory(prefix="psdtool_conflict_") as td:
@@ -1224,8 +1351,8 @@ class App:
         FB = ("Microsoft YaHei UI", 9, "bold")
         win = tk.Toplevel(self.root)
         win.title("亚马逊高级 A+ 连屏导图")
-        win.geometry("720x520")
-        win.minsize(660, 460)
+        win.geometry("820x680")
+        win.minsize(720, 600)
         win.configure(bg=C_BG)
         win.transient(self.root)
 
@@ -1359,8 +1486,9 @@ class App:
         tk.Button(buttons, text="清空", command=lambda: (files.clear(), refresh()),
                   **lbtn).pack(side="left", padx=7)
 
-        start_button = tk.Button(buttons, text="开始导图", bg=C_PURPLE, fg="white",
-                                 font=FB, bd=0, padx=16, pady=6,
+        start_button = tk.Button(buttons, text="开始转换", bg=C_PURPLE, fg="white",
+                                 font=("Microsoft YaHei UI", 11, "bold"),
+                                 bd=0, padx=24, pady=9,
                                  activebackground=C_PURPLE_D, activeforeground="white")
         start_button.pack(side="right")
 
@@ -1494,6 +1622,10 @@ class App:
             self.messagebox.showinfo(APP_TITLE, "请先拖入或选择 PSD / PSB 文件")
             return
         formats = self.formats()
+        use_folder = self.output_mode.get().startswith("主副图画板")
+        if use_folder:
+            # 画板模式的业务输出固定为：每个画板一张同名最高质量 JPG。
+            formats = ("jpg",)
         if not formats:
             self.messagebox.showwarning(APP_TITLE, "至少勾选一种导出格式（PNG 或 JPG）")
             return
@@ -1516,7 +1648,6 @@ class App:
         conflict = self.conflict.get()
         if conflict not in CONFLICT_CHOICES:
             conflict = "number"
-        use_folder = self.output_mode.get().startswith("主副图画板")
         mode_label = "主副图画板" if use_folder else "渲染图片"
         conflict_label = {"number": "自动编号", "overwrite": "覆盖",
                           "skip": "跳过"}[conflict]
@@ -1547,17 +1678,27 @@ class App:
                 " — 大画板请耐心等待"))
             self.ui(lambda name=name: self.update_stage(name, "connecting"))
             try:
-                outputs = unique_outputs(src, formats, use_folder, conflict)
+                if use_folder:
+                    directory = src.parent / src.stem
+                    produced_paths = convert_artboards(
+                        src, directory,
+                        progress_cb=lambda stage, name=name: self.ui(
+                            lambda stage=stage, name=name: self.update_stage(name, stage)))
+                    outputs = {f"artboard_{n}": p
+                               for n, p in enumerate(produced_paths, 1)}
+                else:
+                    outputs = unique_outputs(src, formats, False, conflict)
                 if outputs is None:
                     # skip 策略：目标图片已存在，明确记为跳过，不计入失败。
                     skipped += 1
                     self.ui(lambda name=name: self.log(
                         f"— 已跳过：{name}：目标文件已存在"))
                 else:
-                    convert_one(
-                        src, outputs, trim_mode, formats,
-                        progress_cb=lambda stage, name=name: self.ui(
-                            lambda stage=stage, name=name: self.update_stage(name, stage)))
+                    if not use_folder:
+                        convert_one(
+                            src, outputs, trim_mode, formats,
+                            progress_cb=lambda stage, name=name: self.ui(
+                                lambda stage=stage, name=name: self.update_stage(name, stage)))
                     ok += 1
                     # 记录实际输出目录，供“打开输出目录”使用。
                     dirs = {p.parent for p in outputs.values()}
@@ -1751,12 +1892,13 @@ class ModernApp(LegacyApp):
 
         self.var_png = self.tk.BooleanVar(value=self.settings["png"])
         self.var_jpg = self.tk.BooleanVar(value=self.settings["jpg"])
-        ctk.CTkCheckBox(settings, text="PNG 透明", variable=self.var_png,
-                        font=small, corner_radius=5).grid(row=1, column=2,
-                                                         padx=8, pady=8)
-        ctk.CTkCheckBox(settings, text="JPG 最高质量", variable=self.var_jpg,
-                        font=small, corner_radius=5).grid(row=1, column=3,
-                                                         padx=(8, 18), pady=8)
+        self.cb_png = ctk.CTkCheckBox(settings, text="PNG 透明", variable=self.var_png,
+                                      font=small, corner_radius=5)
+        self.cb_png.grid(row=1, column=2, padx=8, pady=8)
+        self.cb_jpg = ctk.CTkCheckBox(settings, text="JPG 最高质量",
+                                      variable=self.var_jpg,
+                                      font=small, corner_radius=5)
+        self.cb_jpg.grid(row=1, column=3, padx=(8, 18), pady=8)
 
         ctk.CTkLabel(settings, text="同名文件", font=small,
                      text_color="#64748b").grid(row=2, column=0, sticky="w",
@@ -1851,19 +1993,26 @@ class ModernApp(LegacyApp):
                              hover_color="#6d28d9" if is_aplus else "#1f2937",
                              text_color="white" if selected else "#d1d5db")
         aplus = mode.startswith("高级 A+")
+        artboard = mode.startswith("主副图画板")
         for item in self.conflict_controls:
-            item.configure(state="disabled" if aplus else "normal")
+            item.configure(state="disabled" if (aplus or artboard) else "normal")
+        if hasattr(self, "cb_png"):
+            self.cb_png.configure(state="disabled" if (aplus or artboard) else "normal")
+            self.cb_jpg.configure(state="disabled" if (aplus or artboard) else "normal")
+        if artboard:
+            self.var_png.set(False)
+            self.var_jpg.set(True)
         if aplus:
             self.page_title.configure(text="高级 A+ 连屏")
             self.page_hint.configure(text="自动生成电脑端与手机端分图")
             self.drop.configure(text="✦\n高级 A+ 使用独立工作区\n点击“打开高级 A+”开始",
                                 bg="#f5f3ff", fg="#6d28d9",
                                 highlightbackground="#a78bfa")
-            self.btn_go.configure(text="打开高级 A+", fg_color="#7c3aed",
+            self.btn_go.configure(text="高级 A+ 开始转换", fg_color="#7c3aed",
                                   hover_color="#6d28d9")
         elif mode.startswith("主副图画板"):
             self.page_title.configure(text="主副图画板")
-            self.page_hint.configure(text="输出自动整理到源文件同名文件夹")
+            self.page_hint.configure(text="每个画板单独导出 JPG，并使用画板名称命名")
             self.drop.configure(text="⇧\n将主副图 PSD / PSB 拖到这里\n自动建立同名输出文件夹",
                                 bg="#eff6ff", fg="#1d4ed8",
                                 highlightbackground="#60a5fa")

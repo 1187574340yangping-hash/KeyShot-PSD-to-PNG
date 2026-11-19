@@ -272,6 +272,8 @@ python build_exe.py --onedir
 
 > 2026-11-19 v2.9 补充：拖入 PSD/PSB 后自动开始转换；PSD 导出时自动写入 Windows 资源管理器兼容缩略图，PSB 为避免超大文件重存不执行；新增独立品牌图标，并应用到窗口、任务栏、桌面 EXE 与侧栏品牌区。
 
+> 2026-11-19 v2.9 画板导出优化：普通「渲染图片」只输出完整合成 JPG，不再额外生成图层名单；「主副图画板」和高级 A+ 使用独立输出文件夹，每个 Photoshop 画板或顶层分组导出一张最高质量 JPG，并以画板/分组名称命名。画板导出在同一文档内逐张处理，避免复制数 GB 文档造成 Photoshop 内存卡顿；高级 A+ 窗口加高并放大「开始转换」按钮。
+
 > 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。
