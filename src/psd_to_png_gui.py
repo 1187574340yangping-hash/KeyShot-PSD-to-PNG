@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.3"
+VERSION = "2.4"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -210,6 +210,115 @@ def human_size(n: int) -> str:
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
         n /= 1024.0
     return f"{n:.1f} GB"
+
+
+# ---------------------------------------------------------------------------
+# 亚马逊高级 A+ 连屏切图
+# ---------------------------------------------------------------------------
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+A_PLUS_PRESETS = {
+    1464: (600, "电脑第一屏"),
+    1200: (900, "手机第一屏"),
+}
+
+
+def _open_rgb(path):
+    from PIL import Image
+    image = Image.open(path)
+    image.load()
+    if image.mode != "RGB":
+        converted = image.convert("RGB")
+        image.close()
+        image = converted
+    return image
+
+
+def _save_jpeg(image, path, quality=95):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, "JPEG", quality=int(quality), subsampling=0, optimize=True)
+
+
+def split_a_plus_fixed(src: Path, output_root=None, quality=95):
+    """按内置电脑/手机规格，把一张高级 A+ 连屏图从上到下无缝切开。"""
+    src = Path(src)
+    image = _open_rgb(src)
+    try:
+        if image.width not in A_PLUS_PRESETS:
+            raise ValueError(
+                f"无法识别 {image.width}px 宽度；电脑端应为 1464px，手机端应为 1200px")
+        height, prefix = A_PLUS_PRESETS[image.width]
+        if image.height % height:
+            raise ValueError(
+                f"{src.name} 高度 {image.height}px 不能被单屏高度 {height}px 整除")
+        root = Path(output_root) if output_root else src.parent
+        folder = root / src.stem
+        outputs = []
+        for index, top in enumerate(range(0, image.height, height), 1):
+            out = folder / f"{prefix}{index}.jpg"
+            tile = image.crop((0, top, image.width, top + height))
+            try:
+                _save_jpeg(tile, out, quality)
+            finally:
+                tile.close()
+            outputs.append(out)
+        return outputs
+    finally:
+        image.close()
+
+
+def _reference_groups(reference_root: Path, width: int, total_height: int):
+    """找出宽度一致、累计高度等于连屏图的旧版图片组。"""
+    from PIL import Image
+    groups = {}
+    for path in Path(reference_root).rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTS:
+            continue
+        try:
+            with Image.open(path) as im:
+                if im.width == width:
+                    groups.setdefault(path.parent, []).append((path, im.height))
+        except Exception:
+            continue
+    valid = []
+    for parent, items in groups.items():
+        items.sort(key=lambda item: item[0].name)
+        if sum(height for _, height in items) == total_height:
+            valid.append((parent, items))
+    return valid
+
+
+def split_a_plus_reference(src: Path, reference_root: Path, quality=95):
+    """按照旧版文件夹的目录、文件名和尺寸，用新版连屏图原位更新。"""
+    src, reference_root = Path(src), Path(reference_root)
+    image = _open_rgb(src)
+    try:
+        groups = _reference_groups(reference_root, image.width, image.height)
+        # 文件名中出现颜色/版本文件夹名时优先精确匹配，例如“粉色”“米白色”。
+        named = [group for group in groups if group[0].name in src.stem]
+        if len(named) == 1:
+            parent, items = named[0]
+        elif len(groups) == 1:
+            parent, items = groups[0]
+        elif not groups:
+            raise ValueError(
+                f"参考文件夹中没有宽 {image.width}px、累计高 {image.height}px 的旧版图片组")
+        else:
+            choices = "、".join(group[0].name for group in groups)
+            raise ValueError(f"找到多个可能的参考组（{choices}），请让连屏文件名包含对应文件夹名")
+
+        outputs, top = [], 0
+        for out, height in items:
+            tile = image.crop((0, top, image.width, top + height))
+            try:
+                _save_jpeg(tile, out, quality)
+            finally:
+                tile.close()
+            outputs.append(out)
+            top += height
+        return outputs
+    finally:
+        image.close()
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +539,7 @@ class App:
         self.tk = tk
         self.filedialog = filedialog
         self.messagebox = messagebox
+        self.DND_FILES = DND_FILES
         self.files = []
         self.busy = False
         self.stop_requested = threading.Event()
@@ -508,7 +618,10 @@ class App:
                        font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
                        activebackground="#f5f6f8").pack(side="left")
         tk.Button(row2, text="快速预设", command=self.fast_preset,
-                  font=("Microsoft YaHei UI", 8)).pack(side="right")
+                   font=("Microsoft YaHei UI", 8)).pack(side="right")
+        tk.Button(row2, text="高级 A+ 连屏切图", command=self.open_a_plus,
+                  font=("Microsoft YaHei UI", 8), fg="#7c3aed").pack(
+                      side="right", padx=(0, 8))
 
         btns = tk.Frame(self.root, bg="#f5f6f8")
         btns.pack(fill="x", padx=20, pady=(0, 8))
@@ -607,6 +720,151 @@ class App:
         self.var_jpg.set(True)
         self.status.set("快速预设：不裁切，只输出 JPG")
         self.log("已启用快速预设：不裁切，只输出 JPG；文件更快，画布尺寸保持不变。")
+
+    def open_a_plus(self):
+        """打开独立的亚马逊高级 A+ 连屏切图窗口。"""
+        tk = self.tk
+        win = tk.Toplevel(self.root)
+        win.title("亚马逊高级 A+ 连屏导图")
+        win.geometry("680x480")
+        win.minsize(620, 430)
+        win.configure(bg="#f5f6f8")
+        win.transient(self.root)
+
+        tk.Label(win, text="亚马逊高级 A+ 连屏导图",
+                 font=("Microsoft YaHei UI", 16, "bold"),
+                 bg="#f5f6f8", fg="#1f2733").pack(
+                     anchor="w", padx=18, pady=(14, 2))
+        tk.Label(win,
+                 text="新版连屏图按旧版文件名和尺寸覆盖；也可按 1464×600 / 1200×900 自动切图",
+                 font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
+                 fg="#6b7280").pack(anchor="w", padx=18, pady=(0, 10))
+
+        files = []
+        listbox = tk.Listbox(win, height=7, font=("Microsoft YaHei UI", 9))
+        listbox.pack(fill="both", expand=True, padx=18, pady=(0, 8))
+
+        def refresh():
+            listbox.delete(0, "end")
+            for path in files:
+                listbox.insert("end", str(path))
+
+        def add_images(paths):
+            existing = {os.path.normcase(os.path.abspath(str(p))) for p in files}
+            for raw in paths:
+                path = Path(raw)
+                if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+                    key = os.path.normcase(os.path.abspath(str(path)))
+                    if key not in existing:
+                        files.append(path)
+                        existing.add(key)
+            refresh()
+
+        def pick_images():
+            selected = self.filedialog.askopenfilenames(
+                parent=win, title="选择新版高级 A+ 连屏图",
+                filetypes=[("图片", "*.jpg;*.jpeg;*.png;*.webp;*.bmp")])
+            if selected:
+                add_images(selected)
+
+        if self.DND_FILES:
+            try:
+                listbox.drop_target_register(self.DND_FILES)
+                listbox.dnd_bind("<<Drop>>", lambda event: (
+                    add_images(self.root.tk.splitlist(event.data)), "copy")[1])
+            except Exception:
+                pass
+
+        mode = tk.StringVar(value="reference")
+        mode_row = tk.Frame(win, bg="#f5f6f8")
+        mode_row.pack(fill="x", padx=18, pady=(0, 6))
+        tk.Radiobutton(mode_row, text="参考旧版文件夹（推荐）", variable=mode,
+                       value="reference", bg="#f5f6f8").pack(side="left")
+        tk.Radiobutton(mode_row, text="固定尺寸自动切图", variable=mode,
+                       value="fixed", bg="#f5f6f8").pack(side="left", padx=12)
+
+        reference = tk.StringVar()
+        ref_row = tk.Frame(win, bg="#f5f6f8")
+        ref_row.pack(fill="x", padx=18, pady=(0, 7))
+        tk.Label(ref_row, text="旧版/输出文件夹：", bg="#f5f6f8").pack(side="left")
+        tk.Entry(ref_row, textvariable=reference).pack(
+            side="left", fill="x", expand=True, padx=5)
+
+        def pick_reference():
+            selected = self.filedialog.askdirectory(
+                parent=win, title="选择旧版高级 A+ 图片所在文件夹")
+            if selected:
+                reference.set(selected)
+
+        tk.Button(ref_row, text="选择", command=pick_reference).pack(side="left")
+
+        quality = tk.IntVar(value=95)
+        option_row = tk.Frame(win, bg="#f5f6f8")
+        option_row.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Label(option_row, text="JPG 质量：", bg="#f5f6f8").pack(side="left")
+        tk.Spinbox(option_row, from_=80, to=100, textvariable=quality,
+                   width=5).pack(side="left")
+        tk.Label(option_row, text="  切图顺序：从上到下；不缩放、不留缝",
+                 bg="#f5f6f8", fg="#6b7280").pack(side="left")
+
+        status = tk.StringVar(value="请添加新版连屏图")
+        tk.Label(win, textvariable=status, anchor="w", bg="#f5f6f8",
+                 fg="#374151").pack(fill="x", padx=18)
+        buttons = tk.Frame(win, bg="#f5f6f8")
+        buttons.pack(fill="x", padx=18, pady=(8, 14))
+        tk.Button(buttons, text="选择新版连屏图（可多选）",
+                  command=pick_images).pack(side="left")
+        tk.Button(buttons, text="清空", command=lambda: (files.clear(), refresh())).pack(
+                      side="left", padx=7)
+
+        start_button = tk.Button(buttons, text="开始导图", bg="#7c3aed", fg="white")
+        start_button.pack(side="right")
+
+        def run_worker(selected, selected_mode, folder, jpg_quality):
+            succeeded, failed = 0, []
+            for src in selected:
+                try:
+                    if selected_mode == "reference":
+                        outputs = split_a_plus_reference(src, Path(folder), jpg_quality)
+                    else:
+                        outputs = split_a_plus_fixed(
+                            src, Path(folder) if folder else None, jpg_quality)
+                    succeeded += 1
+                    self.log(f"√ 高级A+：{src.name} → {len(outputs)} 张")
+                except Exception as exc:
+                    failed.append(f"{src.name}：{exc}")
+
+            def done():
+                start_button.configure(state="normal")
+                status.set(f"完成：成功 {succeeded}，失败 {len(failed)}")
+                if failed:
+                    self.messagebox.showwarning(
+                        "高级 A+ 连屏导图", "\n".join(failed), parent=win)
+                else:
+                    self.messagebox.showinfo(
+                        "高级 A+ 连屏导图",
+                        f"已完成 {succeeded} 张连屏图的切图。", parent=win)
+            self.ui(done)
+
+        def start_a_plus():
+            if not files:
+                self.messagebox.showinfo(
+                    "高级 A+ 连屏导图", "请先选择或拖入新版连屏图", parent=win)
+                return
+            selected_mode = mode.get()
+            folder = reference.get().strip()
+            if selected_mode == "reference" and not folder:
+                self.messagebox.showinfo(
+                    "高级 A+ 连屏导图", "请选择旧版图片所在文件夹", parent=win)
+                return
+            start_button.configure(state="disabled")
+            status.set(f"正在处理 {len(files)} 张连屏图……")
+            threading.Thread(
+                target=run_worker,
+                args=(list(files), selected_mode, folder, quality.get()),
+                daemon=True).start()
+
+        start_button.configure(command=start_a_plus)
 
     def add_paths(self, paths):
         if self.busy:
@@ -827,10 +1085,12 @@ def main():
         return selftest()
     if args.probe:
         try:
+            import PIL
             app = App()
             app.root.after(800, app.root.destroy)
             app.run()
-            result = {"gui": "OK", "dnd": app.dnd_ok, "tk": app.tk.TkVersion}
+            result = {"gui": "OK", "dnd": app.dnd_ok, "tk": app.tk.TkVersion,
+                      "pillow": PIL.__version__, "a_plus": True}
         except Exception:
             result = {"gui": "FAIL", "error": traceback.format_exc()}
         (Path(tempfile.gettempdir()) / "psdtool_probe.json").write_text(

@@ -246,6 +246,8 @@ python build_exe.py --onedir
 
 > 2026-11-19 v2.3：默认只导出一张完整合成 JPG；每个 PSD/PSB 自动新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。PNG 仍可手动勾选。
 
+> 2026-11-19 v2.4：新增“高级 A+ 连屏切图”。可按旧版文件夹的颜色目录、文件名和尺寸，用新版连屏图批量原位更新；也支持电脑端 `1464×600`、手机端 `1200×900` 固定尺寸自动切图。
+
 > 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。

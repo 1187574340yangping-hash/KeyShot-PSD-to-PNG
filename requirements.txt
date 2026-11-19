@@ -1,3 +1,4 @@
 pywin32
 tkinterdnd2==0.7.0
 pyinstaller
+Pillow

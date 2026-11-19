@@ -63,7 +63,7 @@ def pyinstaller_args(mode: str, work: Path, out: Path, spec: Path) -> list:
         "--hidden-import", "tkinter.messagebox",
         "--exclude-module", "PySide6",
         "--exclude-module", "PyQt5",
-        "--exclude-module", "PIL",
+        "--collect-all", "PIL",
         "--exclude-module", "numpy",
         "--exclude-module", "matplotlib",
         "--exclude-module", "scipy",
