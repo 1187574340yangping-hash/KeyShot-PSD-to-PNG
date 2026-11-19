@@ -430,9 +430,14 @@ class App:
 
         current_row = tk.Frame(self.root, bg="#f5f6f8")
         current_row.pack(fill="x", padx=20, pady=(0, 6))
-        tk.Label(current_row, text="当前文件", width=7, anchor="w",
-                 font=("Microsoft YaHei UI", 9), bg="#f5f6f8").pack(side="left")
-        self.current_progress = ttk.Progressbar(current_row, mode="indeterminate")
+        self.current_progress_label = tk.StringVar(value="当前文件：空闲")
+        tk.Label(current_row, textvariable=self.current_progress_label,
+                 width=14, anchor="w", font=("Microsoft YaHei UI", 9),
+                 bg="#f5f6f8").pack(side="left")
+        # 空闲时使用 0 值确定进度，避免 Windows 主题在停止的动态进度条上
+        # 仍显示一小块绿色，让人误以为程序卡住。
+        self.current_progress = ttk.Progressbar(current_row, mode="determinate",
+                                                maximum=100, value=0)
         self.current_progress.pack(side="left", fill="x", expand=True)
 
         self.status = tk.StringVar(value="等待文件")
@@ -557,6 +562,8 @@ class App:
         self.progress["maximum"] = len(self.files)
         self.progress["value"] = 0
         self.current_progress.stop()
+        self.current_progress.configure(mode="determinate", value=0)
+        self.current_progress_label.set("当前文件：准备中")
 
         files = list(self.files)
         trim_mode = self.trim_key()
@@ -577,7 +584,10 @@ class App:
             self.ui(lambda i=i, name=name, size=size: self.status.set(
                 f"[{i}/{len(files)}] 正在处理 {name}  ({human_size(size)})"
                 " — 大画板请耐心等待"))
-            self.ui(lambda: self.current_progress.start(12))
+            self.ui(lambda name=name: (
+                self.current_progress_label.set(f"当前：{name[:8]}"),
+                self.current_progress.configure(mode="indeterminate"),
+                self.current_progress.start(12)))
             try:
                 outputs = unique_outputs(src, formats)
                 convert_one(src, outputs, trim_mode, formats)
@@ -591,7 +601,9 @@ class App:
                 if "Photoshop" in msg or "COM" in msg.upper():
                     msg = "Photoshop 忙或无法读取文件：" + msg
                 self.ui(lambda name=name, msg=msg: self.log(f"× {name}：{msg}"))
-            self.ui(lambda: self.current_progress.stop())
+            self.ui(lambda: (
+                self.current_progress.stop(),
+                self.current_progress.configure(mode="determinate", value=0)))
             self.ui(lambda i=i: self.progress.configure(value=i))
 
         done_ok, done_fail = ok, failed
@@ -600,6 +612,8 @@ class App:
     def finish(self, ok, failed):
         self.busy = False
         self.current_progress.stop()
+        self.current_progress.configure(mode="determinate", value=0)
+        self.current_progress_label.set("当前文件：空闲")
         for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
             b.configure(state="normal")
         self.status.set(f"完成：成功 {ok} 个，失败 {failed} 个")
