@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.3
+PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.8
 
 面向「PS 大画板 / 大画布」场景：画布很大、内容只占中间一小块、
 四周大量透明或白色留白；文件常常是 1~2 GB 的 .psb。
@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.7"
+VERSION = "2.8"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -180,7 +180,7 @@ def collect(paths) -> list:
     return found
 
 
-def unique_outputs(src: Path, formats, use_folder=False) -> dict:
+def unique_outputs(src: Path, formats, use_folder=False, conflict="number"):
     """
     为同一份内容挑一个未被占用的 stem，PNG 与 JPG 共用它，保证成对。
     阶梯：name.png/.jpg → name_PNG.png/.jpg → name_PNG_2.png/.jpg → ...
@@ -199,11 +199,89 @@ def unique_outputs(src: Path, formats, use_folder=False) -> dict:
             out["png"] = directory / (stem + suffix + ".png")
         if "jpg" in fmts:
             out["jpg"] = directory / (stem + suffix + ".jpg")
-        if out and all(not p.exists() for p in out.values()):
+        available = out and all(not p.exists() for p in out.values())
+        if conflict == "overwrite" or available:
             layer_name = "图层列表.txt" if use_folder else f"{src.stem}_图层列表.txt"
             out["layers"] = directory / layer_name
             return out
+        if conflict == "skip":
+            return None
     raise RuntimeError("同名输出过多（超过 10000 个），请先清理目录")
+
+
+# 工作模式：key 用于持久化，display/value 用于界面，避免中文文案漂移。
+MODE_DEFS = (
+    ("render", "渲染图片", "JPG 放源文件旁", "渲染图片（JPG 放源文件旁）"),
+    ("artboard", "主副图画板", "自动建立文件夹", "主副图画板（建立同名文件夹）"),
+    ("aplus", "高级 A+", "电脑端 / 手机端", "高级 A+ 连屏（电脑端 / 手机端）"),
+)
+MODE_VALUES = {key: value for key, _, _, value in MODE_DEFS}
+MODE_KEYS = {value: key for key, _, _, value in MODE_DEFS}
+
+# 同名文件处理策略
+CONFLICT_CHOICES = ("number", "overwrite", "skip")
+
+# 用户设置默认值（不保存 PSD/PSB 文件列表与任何隐私内容）
+DEFAULT_SETTINGS = {
+    "mode": "render",
+    "trim": "transparent",
+    "png": False,
+    "jpg": True,
+    "conflict": "number",
+    "aplus_quality": 95,
+    "aplus_reference": "",
+}
+
+SETTINGS_PATH = (Path(os.environ.get("APPDATA", tempfile.gettempdir())) /
+                 "PSDTool" / "settings.json")
+
+
+def normalize_settings(data):
+    """只接受已知键与合法值，其余一律回退默认；杜绝坏设置导致闪退。"""
+    out = dict(DEFAULT_SETTINGS)
+    if not isinstance(data, dict):
+        return out
+    mode = data.get("mode")
+    if mode in MODE_VALUES:
+        out["mode"] = mode
+    elif mode in MODE_KEYS:  # 兼容早期直接存显示文本
+        out["mode"] = MODE_KEYS[mode]
+    trim = data.get("trim")
+    if isinstance(trim, str) and trim in TRIM_MODES:
+        out["trim"] = trim
+    conflict = data.get("conflict")
+    if isinstance(conflict, str) and conflict in CONFLICT_CHOICES:
+        out["conflict"] = conflict
+    for flag in ("png", "jpg"):
+        value = data.get(flag)
+        if isinstance(value, bool):
+            out[flag] = value
+    quality = data.get("aplus_quality")
+    if (isinstance(quality, int) and not isinstance(quality, bool)
+            and 80 <= quality <= 100):
+        out["aplus_quality"] = quality
+    reference = data.get("aplus_reference")
+    if isinstance(reference, str):
+        out["aplus_reference"] = reference
+    return out
+
+
+def load_settings():
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return dict(DEFAULT_SETTINGS)
+    return normalize_settings(data)
+
+
+def save_settings(data):
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_PATH.write_text(
+            json.dumps(normalize_settings(data), ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except OSError:
+        pass
 
 
 def human_size(n: int) -> str:
@@ -467,6 +545,7 @@ def convert_one(psd: Path, outputs: dict, trim_mode: str, formats,
 # ---------------------------------------------------------------------------
 def selftest() -> int:
     import tempfile
+    global SETTINGS_PATH
 
     checks = []
 
@@ -552,6 +631,139 @@ def selftest() -> int:
           "function dl" in js_layers and "LayerSet" in js_layers and
           "图层列表.txt" in js_layers)
 
+    # --- v2.8：三种同名文件策略、PNG/JPG 共用后缀 ---
+    with tempfile.TemporaryDirectory(prefix="psdtool_conflict_") as td:
+        d = Path(td)
+        src = d / "NTT72-D.psb"
+        src.write_bytes(b"")
+        # 自动编号：首次 + 冲突后成对使用同一后缀
+        n1 = unique_outputs(src, ("png", "jpg"), conflict="number")
+        for p in n1.values():
+            p.write_bytes(b"")
+        n2 = unique_outputs(src, ("png", "jpg"), conflict="number")
+        check("自动编号：冲突后 PNG/JPG 共用同一后缀",
+              n2["png"].stem == n2["jpg"].stem and
+              n2["png"].name == "NTT72-D_PNG.png" and
+              n2["jpg"].name == "NTT72-D_PNG.jpg",
+              f"{n2['png'].name} / {n2['jpg'].name}")
+        # 覆盖：使用原目标路径、不生成后缀
+        ov = unique_outputs(src, ("png", "jpg"), conflict="overwrite")
+        check("覆盖策略：使用原路径不生成后缀",
+              ov["png"].name == "NTT72-D.png" and ov["jpg"].name == "NTT72-D.jpg",
+              f"{ov['png'].name} / {ov['jpg'].name}")
+        # 跳过：目标已存在时返回 None
+        sk = unique_outputs(src, ("png", "jpg"), conflict="skip")
+        check("跳过策略：目标已存在返回 None", sk is None, str(sk))
+        # 不覆盖 PSD/PSB：所有输出后缀都不是源文件后缀
+        check("输出不会覆盖 PSD/PSB 原稿",
+              all(p.suffix.lower() not in SUPPORTED_EXTS for p in ov.values()))
+
+    # --- v2.8：设置默认值 / 损坏回退 / 非法值忽略 ---
+    saved_path = SETTINGS_PATH
+    try:
+        with tempfile.TemporaryDirectory(prefix="psdtool_settings_") as td:
+            SETTINGS_PATH = Path(td) / "PSDTool" / "settings.json"
+            fresh = load_settings()
+            check("设置文件不存在时使用安全默认值",
+                  fresh == DEFAULT_SETTINGS, str(fresh))
+            SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SETTINGS_PATH.write_text("{ this is not json", encoding="utf-8")
+            broken = load_settings()
+            check("设置 JSON 损坏时安全回退默认值",
+                  broken == DEFAULT_SETTINGS, str(broken))
+            # 合法值保留，非法值被忽略
+            good = normalize_settings({
+                "mode": "artboard", "trim": "both", "png": True, "jpg": False,
+                "conflict": "overwrite", "aplus_quality": 90,
+                "aplus_reference": r"D:\参考", "secret": "ignore me"})
+            check("合法设置值被保留",
+                  good["mode"] == "artboard" and good["trim"] == "both" and
+                  good["conflict"] == "overwrite" and good["aplus_quality"] == 90 and
+                  good["png"] is True and good["jpg"] is False, str(good))
+            bad = normalize_settings({
+                "mode": "unknown", "trim": "xxx", "conflict": "delete",
+                "png": "yes", "jpg": 1, "aplus_quality": 999,
+                "aplus_reference": 123})
+            check("无效设置值被忽略并回退默认", bad == DEFAULT_SETTINGS, str(bad))
+            check("设置不保存未知键/隐私", "secret" not in good and
+                  set(good) == set(DEFAULT_SETTINGS))
+    finally:
+        SETTINGS_PATH = saved_path
+    # save_settings 往返（写到临时目录，不污染真实 APPDATA）
+    saved_path = SETTINGS_PATH
+    try:
+        with tempfile.TemporaryDirectory(prefix="psdtool_save_") as td:
+            SETTINGS_PATH = Path(td) / "PSDTool" / "settings.json"
+            save_settings({"mode": "aplus", "conflict": "skip", "aplus_quality": 88})
+            loaded = load_settings()
+            check("保存设置后可正确读回",
+                  loaded["mode"] == "aplus" and loaded["conflict"] == "skip" and
+                  loaded["aplus_quality"] == 88, str(loaded))
+    finally:
+        SETTINGS_PATH = saved_path
+
+    # --- v2.8：高级 A+ 固定切图、首页映射、排除源文件本身 ---
+    try:
+        from PIL import Image as _Image
+        with tempfile.TemporaryDirectory(prefix="psdtool_aplus_") as td:
+            d = Path(td)
+            pc = d / "电脑首页.jpg"
+            _Image.new("RGB", (1464, 1200), (200, 100, 50)).save(pc, "JPEG")
+            pc_out = split_a_plus_fixed(pc, quality=90)
+            pc_sizes = []
+            for p in pc_out:
+                with _Image.open(p) as im:
+                    pc_sizes.append(im.size)
+            check("高级A+固定电脑端切图（1464×1200→2×1464×600）",
+                  len(pc_out) == 2 and pc_sizes == [(1464, 600), (1464, 600)],
+                  str(pc_sizes))
+
+            mb = d / "手机首页.jpg"
+            _Image.new("RGB", (1200, 2700), (50, 100, 200)).save(mb, "JPEG")
+            mb_out = split_a_plus_fixed(mb, quality=90)
+            mb_sizes = []
+            for p in mb_out:
+                with _Image.open(p) as im:
+                    mb_sizes.append(im.size)
+            check("高级A+固定手机端切图（1200×2700→3×1200×900）",
+                  len(mb_out) == 3 and all(s == (1200, 900) for s in mb_sizes),
+                  str(mb_sizes))
+
+            bad_h = d / "bad.jpg"
+            _Image.new("RGB", (1464, 601), (0, 0, 0)).save(bad_h, "JPEG")
+            try:
+                split_a_plus_fixed(bad_h)
+                raised = False
+            except ValueError:
+                raised = True
+            check("高度不能整除时明确报错", raised)
+
+            # 参考目录：电脑端/电脑第一屏1.jpg(600) + 电脑第一屏2.jpg(600)
+            ref = d / "ref"
+            (ref / "电脑端").mkdir(parents=True)
+            _Image.new("RGB", (1464, 600), (1, 2, 3)).save(
+                ref / "电脑端" / "电脑第一屏1.jpg", "JPEG")
+            _Image.new("RGB", (1464, 600), (4, 5, 6)).save(
+                ref / "电脑端" / "电脑第一屏2.jpg", "JPEG")
+            home = d / "A+首页.jpg"
+            _Image.new("RGB", (1464, 1200), (7, 8, 9)).save(home, "JPEG")
+            groups = _reference_module_groups(ref, home, 1464, 1200)
+            mapped = [p.name for p, _ in
+                      (groups[0][1] if groups else [])]
+            check("首页映射到第一屏1/2",
+                  sorted(mapped) == ["电脑第一屏1.jpg", "电脑第一屏2.jpg"],
+                  str(mapped))
+            # 扫描参考文件夹时必须排除源连屏图本身
+            (ref / "电脑端" / "A+首页.jpg").write_bytes(pc.read_bytes())
+            groups2 = _reference_module_groups(ref, ref / "电脑端" / "A+首页.jpg",
+                                               1464, 1200)
+            included = {p.resolve() for _, items in groups2 for p, _ in items}
+            check("参考扫描排除源文件本身",
+                  (ref / "电脑端" / "A+首页.jpg").resolve() not in included,
+                  str(len(included)))
+    except ImportError:
+        check("高级 A+ 图片切图需要 Pillow", False, "Pillow 不可用")
+
     ok = all(c["ok"] for c in checks)
     report = {
         "selftest": "PASS" if ok else "FAIL",
@@ -597,8 +809,14 @@ class App:
         self.files = []
         self.busy = False
         self.stop_requested = threading.Event()
+        # 启动时读取用户设置（文件不存在 / JSON 损坏 / 值非法都会安全回退）
+        self.settings = load_settings()
+        self.output_dirs = []
+        self.aplus_quality = self.settings["aplus_quality"]
+        self.aplus_reference = self.settings["aplus_reference"]
 
         self.root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.report_callback_exception = self.report_callback_exception
         self.root.title(APP_TITLE)
         self.root.geometry("720x650")
@@ -645,12 +863,10 @@ class App:
         # 三种业务模式使用卡片式选择，减少下拉框的隐藏信息。
         mode_row = tk.Frame(self.root, bg="#f3f4f6")
         mode_row.pack(fill="x", padx=24, pady=(0, 10))
-        self.output_mode = tk.StringVar(value="渲染图片（JPG 放源文件旁）")
-        modes = (
-            ("渲染图片", "JPG 放源文件旁", "渲染图片（JPG 放源文件旁）"),
-            ("主副图画板", "自动建立文件夹", "主副图画板（建立同名文件夹）"),
-            ("高级 A+", "电脑端 / 手机端", "高级 A+ 连屏（电脑端 / 手机端）"),
-        )
+        self.output_mode = tk.StringVar(
+            value=MODE_VALUES.get(self.settings["mode"], MODE_VALUES["render"]))
+        modes = tuple((heading, sub, value)
+                      for _, heading, sub, value in MODE_DEFS)
         for heading, sub, value in modes:
             card = tk.Radiobutton(
                 mode_row, text=f"{heading}\n{sub}", variable=self.output_mode,
@@ -675,11 +891,15 @@ class App:
         row1.pack(fill="x", padx=24, pady=(0, 6))
         tk.Label(row1, text="裁切方式：", font=("Microsoft YaHei UI", 9),
                  bg="#f3f4f6").pack(side="left")
-        self.trim = tk.StringVar(value=TRIM_MODES["transparent"])
+        self.trim = tk.StringVar(
+            value=TRIM_MODES.get(self.settings["trim"], TRIM_MODES["transparent"]))
         combo = ttk.Combobox(row1, textvariable=self.trim, state="readonly",
                              width=36, font=("Microsoft YaHei UI", 9))
         combo["values"] = [TRIM_MODES[k] for k in TRIM_MODES]
-        combo.current(0)
+        if self.trim.get() in combo["values"]:
+            combo.current(list(combo["values"]).index(self.trim.get()))
+        else:
+            combo.current(0)
         combo.pack(side="left", padx=4)
 
         # 第 3 行：导出格式（可勾选）
@@ -687,8 +907,8 @@ class App:
         row2.pack(fill="x", padx=24, pady=(0, 8))
         tk.Label(row2, text="导出格式：", font=("Microsoft YaHei UI", 9),
                  bg="#f3f4f6").pack(side="left")
-        self.var_png = tk.BooleanVar(value=False)
-        self.var_jpg = tk.BooleanVar(value=True)
+        self.var_png = tk.BooleanVar(value=self.settings["png"])
+        self.var_jpg = tk.BooleanVar(value=self.settings["jpg"])
         tk.Checkbutton(row2, text="PNG（保留透明）", variable=self.var_png,
                        font=("Microsoft YaHei UI", 9), bg="#f3f4f6",
                        activebackground="#f3f4f6").pack(side="left", padx=(4, 10))
@@ -697,6 +917,19 @@ class App:
                        activebackground="#f3f4f6").pack(side="left")
         tk.Button(row2, text="快速预设", command=self.fast_preset,
                    font=("Microsoft YaHei UI", 8)).pack(side="right")
+
+        # 第 4 行：同名文件处理策略（仅渲染/画板转换使用；高级 A+ 参考模式固定覆盖）
+        row3 = tk.Frame(self.root, bg="#f3f4f6")
+        row3.pack(fill="x", padx=24, pady=(0, 8))
+        self.conflict_row = row3
+        tk.Label(row3, text="同名文件：", font=("Microsoft YaHei UI", 9),
+                 bg="#f3f4f6").pack(side="left")
+        self.conflict = tk.StringVar(value=self.settings["conflict"])
+        for text, key in (("自动编号", "number"), ("覆盖", "overwrite"),
+                          ("跳过", "skip")):
+            tk.Radiobutton(row3, text=text, variable=self.conflict, value=key,
+                           font=("Microsoft YaHei UI", 9), bg="#f3f4f6",
+                           activebackground="#f3f4f6").pack(side="left", padx=(4, 8))
 
         btns = tk.Frame(self.root, bg="#f3f4f6")
         btns.pack(fill="x", padx=24, pady=(0, 10))
@@ -712,9 +945,12 @@ class App:
         self.btn_stop = tk.Button(btns, text="停止队列", width=9,
                                   command=self.request_stop, state="disabled")
         self.btn_clear = tk.Button(btns, text="清空", width=6, command=self.clear)
+        self.btn_open_dir = tk.Button(btns, text="打开输出目录", width=12,
+                                      command=self.open_output_dir, state="disabled")
         for b in (self.btn_files, self.btn_folder, self.btn_go,
                   self.btn_stop, self.btn_clear):
             b.pack(side="left", padx=(0, 8))
+        self.btn_open_dir.pack(side="right")
         self.sync_mode_ui()
 
         progress_row = tk.Frame(self.root, bg="#f5f6f8")
@@ -754,6 +990,14 @@ class App:
         mode = self.output_mode.get()
         if not hasattr(self, "btn_go"):
             return
+        # 高级 A+ 不经过普通转换的同名策略，置灰避免误导。
+        if hasattr(self, "conflict_row"):
+            conflict_state = "disabled" if mode.startswith("高级 A+") else "normal"
+            for child in self.conflict_row.winfo_children():
+                try:
+                    child.configure(state=conflict_state)
+                except Exception:
+                    pass
         if mode.startswith("高级 A+"):
             self.btn_go.configure(text="打开高级 A+", bg="#7c3aed",
                                   activebackground="#6d28d9")
@@ -810,6 +1054,30 @@ class App:
             if v == label:
                 return k
         return "transparent"
+
+    def persist_settings(self):
+        """把当前界面状态写入设置文件；只存偏好，不存文件列表/隐私。"""
+        if not hasattr(self, "conflict"):
+            return
+        mode = MODE_KEYS.get(self.output_mode.get(), "render")
+        data = {
+            "mode": mode,
+            "trim": self.trim_key(),
+            "png": bool(self.var_png.get()),
+            "jpg": bool(self.var_jpg.get()),
+            "conflict": self.conflict.get(),
+            "aplus_quality": self.aplus_quality,
+            "aplus_reference": self.aplus_reference,
+        }
+        self.settings = data
+        save_settings(data)
+
+    def on_close(self):
+        self.persist_settings()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def formats(self):
         out = []
@@ -884,13 +1152,14 @@ class App:
 
         mode = tk.StringVar(value="reference")
         mode_row = tk.Frame(win, bg="#f5f6f8")
+        # 最近一次参考目录作为默认值带入；用户改动后在导图时保存。
         mode_row.pack(fill="x", padx=18, pady=(0, 6))
         tk.Radiobutton(mode_row, text="参考旧版文件夹（推荐）", variable=mode,
                        value="reference", bg="#f5f6f8").pack(side="left")
         tk.Radiobutton(mode_row, text="固定尺寸自动切图", variable=mode,
                        value="fixed", bg="#f5f6f8").pack(side="left", padx=12)
 
-        reference = tk.StringVar()
+        reference = tk.StringVar(value=self.aplus_reference)
         ref_row = tk.Frame(win, bg="#f5f6f8")
         ref_row.pack(fill="x", padx=18, pady=(0, 7))
         tk.Label(ref_row, text="旧版/输出文件夹：", bg="#f5f6f8").pack(side="left")
@@ -905,7 +1174,7 @@ class App:
 
         tk.Button(ref_row, text="选择", command=pick_reference).pack(side="left")
 
-        quality = tk.IntVar(value=95)
+        quality = tk.IntVar(value=self.aplus_quality)
         option_row = tk.Frame(win, bg="#f5f6f8")
         option_row.pack(fill="x", padx=18, pady=(0, 8))
         tk.Label(option_row, text="JPG 质量：", bg="#f5f6f8").pack(side="left")
@@ -964,6 +1233,10 @@ class App:
                 self.messagebox.showinfo(
                     "高级 A+ 连屏导图", "请选择旧版图片所在文件夹", parent=win)
                 return
+            # 记住质量与最近参考目录（参考模式即用户明确同意覆盖旧版分图）
+            self.aplus_quality = quality.get()
+            self.aplus_reference = folder
+            self.persist_settings()
             start_button.configure(state="disabled")
             status.set(f"正在处理 {len(files)} 张连屏图……")
             threading.Thread(
@@ -1054,6 +1327,8 @@ class App:
 
         self.busy = True
         self.stop_requested.clear()
+        self.output_dirs = []
+        self.btn_open_dir.configure(state="disabled")
         for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
             b.configure(state="disabled")
         self.btn_stop.configure(state="normal")
@@ -1065,18 +1340,26 @@ class App:
 
         files = list(self.files)
         trim_mode = self.trim_key()
+        conflict = self.conflict.get()
+        if conflict not in CONFLICT_CHOICES:
+            conflict = "number"
         use_folder = self.output_mode.get().startswith("主副图画板")
         mode_label = "主副图画板" if use_folder else "渲染图片"
+        conflict_label = {"number": "自动编号", "overwrite": "覆盖",
+                          "skip": "跳过"}[conflict]
         self.log(f"— 开始：模式={mode_label}，{len(files)} 个文件，"
-                 f"裁切={trim_mode}，格式={'+'.join(formats)}")
+                 f"裁切={trim_mode}，格式={'+'.join(formats)}，同名={conflict_label}")
+        self.persist_settings()
 
         threading.Thread(target=self.worker,
-                         args=(files, trim_mode, formats, use_folder),
+                         args=(files, trim_mode, formats, use_folder, conflict),
                          daemon=True).start()
 
-    def worker(self, files, trim_mode, formats, use_folder=False):
+    def worker(self, files, trim_mode, formats, use_folder=False,
+               conflict="number"):
         ok = 0
         failed = 0
+        skipped = 0
         processed = 0
         for i, src in enumerate(files, 1):
             if self.stop_requested.is_set():
@@ -1091,15 +1374,26 @@ class App:
                 " — 大画板请耐心等待"))
             self.ui(lambda name=name: self.update_stage(name, "connecting"))
             try:
-                outputs = unique_outputs(src, formats, use_folder)
-                convert_one(
-                    src, outputs, trim_mode, formats,
-                    progress_cb=lambda stage, name=name: self.ui(
-                        lambda stage=stage, name=name: self.update_stage(name, stage)))
-                ok += 1
-                produced = " + ".join(p.name for p in outputs.values())
-                self.ui(lambda name=name, produced=produced: self.log(
-                    f"√ {name} → {produced}"))
+                outputs = unique_outputs(src, formats, use_folder, conflict)
+                if outputs is None:
+                    # skip 策略：目标图片已存在，明确记为跳过，不计入失败。
+                    skipped += 1
+                    self.ui(lambda name=name: self.log(
+                        f"— 已跳过：{name}：目标文件已存在"))
+                else:
+                    convert_one(
+                        src, outputs, trim_mode, formats,
+                        progress_cb=lambda stage, name=name: self.ui(
+                            lambda stage=stage, name=name: self.update_stage(name, stage)))
+                    ok += 1
+                    # 记录实际输出目录，供“打开输出目录”使用。
+                    dirs = {p.parent for p in outputs.values()}
+                    for directory in dirs:
+                        if directory not in self.output_dirs:
+                            self.output_dirs.append(directory)
+                    produced = " + ".join(p.name for p in outputs.values())
+                    self.ui(lambda name=name, produced=produced: self.log(
+                        f"√ {name} → {produced}"))
             except Exception as exc:
                 failed += 1
                 msg = str(exc)
@@ -1112,12 +1406,13 @@ class App:
             self.ui(lambda i=i: self.progress.configure(value=i))
             processed = i
 
-        done_ok, done_fail = ok, failed
+        done_ok, done_fail, done_skip = ok, failed, skipped
         stopped = processed < len(files) and self.stop_requested.is_set()
         remaining = len(files) - processed
-        self.ui(lambda: self.finish(done_ok, done_fail, stopped, remaining))
+        self.ui(lambda: self.finish(done_ok, done_fail, stopped, remaining,
+                                    done_skip))
 
-    def finish(self, ok, failed, stopped=False, remaining=0):
+    def finish(self, ok, failed, stopped=False, remaining=0, skipped=0):
         self.busy = False
         self.current_progress.stop()
         self.current_progress.configure(mode="determinate", value=0)
@@ -1125,15 +1420,34 @@ class App:
         self.btn_stop.configure(state="disabled")
         for b in (self.btn_files, self.btn_folder, self.btn_go, self.btn_clear):
             b.configure(state="normal")
+        # 有成功输出才启用“打开输出目录”，且只打开一个资源管理器窗口。
+        if self.output_dirs and ok > 0:
+            self.btn_open_dir.configure(state="normal")
+        skip_txt = f"，跳过 {skipped}" if skipped else ""
         if stopped:
-            self.status.set(f"已停止：成功 {ok}，失败 {failed}，未处理 {remaining}")
-            self.log(f"— 队列已停止：成功 {ok}，失败 {failed}，未处理 {remaining}")
+            self.status.set(f"已停止：成功 {ok}，失败 {failed}，未处理 {remaining}{skip_txt}")
+            self.log(f"— 队列已停止：成功 {ok}，失败 {failed}，未处理 {remaining}{skip_txt}")
         else:
-            self.status.set(f"完成：成功 {ok} 个，失败 {failed} 个")
-            self.log(f"— 全部结束：成功 {ok}，失败 {failed}")
+            self.status.set(f"完成：成功 {ok}，失败 {failed}{skip_txt}")
+            self.log(f"— 全部结束：成功 {ok}，失败 {failed}{skip_txt}")
         if failed:
             self.messagebox.showwarning(APP_TITLE,
                                         f"完成，但有 {failed} 个文件失败。\n详情见下方日志。")
+
+    def open_output_dir(self):
+        """只打开一个资源管理器：多文件同目录开共同目录，不同目录开第一个。"""
+        if not self.output_dirs:
+            return
+        target = Path(self.output_dirs[0])
+        unique = {os.path.normcase(os.path.abspath(str(d))) for d in self.output_dirs}
+        if len(unique) == 1:
+            target = Path(self.output_dirs[0])
+        else:
+            target = Path(self.output_dirs[0])  # 不同目录时只打开第一个
+        try:
+            os.startfile(str(target))
+        except OSError as exc:
+            self.log(f"! 无法打开输出目录：{exc}")
 
     def run(self):
         self.root.mainloop()

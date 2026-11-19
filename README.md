@@ -10,8 +10,9 @@
 
 | | 程序 | 能力 |
 | --- | --- | --- |
-| **v2.3（推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | **支持 .psd + .psb**、默认合成 JPG、图层名称清单、同名输出文件夹、批量拖放与大文件进度 |
-| **v2.2 目录修复版（本机推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 阶段进度、快速预设、停止队列、批量拖入加固；解压后运行 `PSD一键转PNG工具/PSDTool.exe` |
+| **v2.8（推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 同名文件策略（自动编号 / 覆盖 / 跳过）、记住导出设置、一键打开输出目录、三种工作模式卡片 |
+| v2.7 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 三张顶部业务模式卡片、蓝紫配色、拖放区随模式更新提示 |
+| v2.3 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | **支持 .psd + .psb**、默认合成 JPG、图层名称清单、同名输出文件夹、批量拖放与大文件进度 |
 | v1（原版，保留） | [`dist/PSD一键转PNG.exe`](dist/PSD一键转PNG.exe)（13 KB .NET） | 只认 .psd、不裁切、只出 PNG |
 
 > v1 的原始二进制与逆向证据完整保留在仓库里，见 [`docs/REVERSE_ENGINEERING.md`](docs/REVERSE_ENGINEERING.md)。
@@ -186,6 +187,16 @@ flowchart TD
 - 不改动源 PSD/PSB。
 - 中文、空格、全角括号、单引号路径均可处理（已转义）。
 
+**同名文件策略（v2.8）**：渲染图片与画板模式下，「同名文件」可选三种处理——
+
+| 策略 | 行为 | 适用 |
+| --- | --- | --- |
+| **自动编号**（默认） | `name.jpg` 已存在则改用 `name_PNG.jpg`、`name_PNG_2.jpg`；PNG/JPG 共用同一后缀 | 反复重跑、增量补图，绝不覆盖旧成果 |
+| 覆盖 | 直接使用原路径覆盖已有图片与图层清单；不会覆盖 `.psd`/`.psb` 原稿 | 确定要刷新这一批输出 |
+| 跳过 | 目标图片已存在则该张记为「已跳过」，不计入失败 | 只补缺失的图 |
+
+高级 A+ 参考旧版文件夹模式本身即为「用新版连屏图原位更新旧分图」，属于用户明确选择参考模式后的覆盖行为，不受上方下拉框影响。
+
 ---
 
 ## 运行环境与前置条件
@@ -254,6 +265,8 @@ python build_exe.py --onedir
 
 > 2026-11-19 v2.7：界面改为三张顶部业务模式卡片，统一蓝紫配色、进度条和主按钮层级；拖放区会随当前模式显示对应的输出位置与操作提示。
 
+> 2026-11-19 v2.8：新增「同名文件」策略（自动编号 / 覆盖 / 跳过，渲染与画板默认自动编号），PNG 与 JPG 始终共用同一后缀；记住工作模式、裁切方式、导出格式、同名策略、A+ 质量与最近参考目录到 `%APPDATA%\PSDTool\settings.json`（不保存文件列表与隐私，坏设置自动回退默认）；转换完成后可一键「打开输出目录」（同目录只开一个窗口）；跳过不计入失败，日志明确标注。自检扩展到 41 项。
+
 > 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。
@@ -317,7 +330,10 @@ psd-to-png/
 能。取消勾选另一种即可；两个都取消会提示至少选一个。
 
 **重跑会覆盖上次的图吗？**
-不会，自动加 `_PNG`、`_PNG_2`… 后缀，且 PNG 与 JPG 共用同一后缀保持成对。
+默认不会：自动加 `_PNG`、`_PNG_2`… 后缀，PNG 与 JPG 共用同一后缀保持成对。需要覆盖或跳过时，在「同名文件」里切换即可；覆盖也不会动 `.psd`/`.psb` 原稿。
+
+**设置会记住吗？**
+会。工作模式、裁切方式、导出格式、同名策略、A+ 质量与最近参考目录保存在 `%APPDATA%\PSDTool\settings.json`，下次启动自动恢复；不保存文件列表。设置文件损坏会安全回退默认值，不会导致闪退。
 
 **提示「没有找到 Photoshop」？**
 确认装的是桌面完整版而非看图软件；COM 组件需注册。修复安装或先手动启动一次 Photoshop 通常可解决。
