@@ -22,6 +22,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src" / "psd_to_png_gui.py"
+ICON = ROOT / "assets" / "app_icon.ico"
+ASSETS = ROOT / "assets"
 APP_NAME = "PSD一键转PNG"
 ASCII_NAME = "PSDTool"  # onedir 专用：中文名会让 PKG 路径解析失败
 OUT_NAME = "PSD-PSB一键转PNG-JPG.exe"
@@ -50,6 +52,8 @@ def pyinstaller_args(mode: str, work: Path, out: Path, spec: Path) -> list:
         PY, "-m", "PyInstaller",
         "--noconfirm",
         "--windowed",
+        "--icon", str(ICON),
+        "--add-data", f"{ASSETS};assets",
         "--name", APP_NAME,
         "--workpath", str(work),
         "--distpath", str(out),

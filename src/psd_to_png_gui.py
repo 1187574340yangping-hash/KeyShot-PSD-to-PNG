@@ -13,8 +13,8 @@ PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.9
   4. 中文 / 全角括号路径、文件大小与逐张进度、单张失败不中断整批
   5. 默认导出一张完整合成 JPG，并在同名文件夹写出图层名称清单
 
-仍然保持原版承诺：输出集中在源文件同名文件夹、不覆盖同名、不修改原稿、
-后台线程转换、COM 显式释放、关掉 Photoshop 全部弹窗。
+仍然保持原版承诺：不覆盖同名输出、转换修改只发生在内存副本；为让
+Windows 显示缩略图，PSD 会额外写回兼容合成预览（不改变图层与画面）。
 
 用法：
     双击运行（GUI）
@@ -38,6 +38,12 @@ VERSION = "2.9"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
+
+def resource_path(relative: str) -> Path:
+    """返回开发环境或 PyInstaller 冻结包内的资源路径。"""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base / relative
+
 # ---- UI 主题配色（浅色，统一卡片与品牌层次）----
 C_BG = "#eef1f6"          # 窗口底色
 C_CARD = "#ffffff"        # 卡片底
@@ -58,6 +64,7 @@ C_PURPLE_LINE = "#ddd6fe"
 STAGE_INFO = {
     "connecting": (3, "连接 Photoshop"),
     "opening": (8, "打开大文件"),
+    "thumbnail": (15, "写入 PSD 缩略图"),
     "preparing": (30, "转换色彩/位深"),
     "layers": (38, "读取图层名称"),
     "trimming": (45, "裁切画布"),
@@ -88,7 +95,7 @@ def js_escape(s) -> str:
 
 
 def build_script(psd, png, jpg, trim_mode, formats, progress_file=None,
-                 layer_list=None) -> str:
+                 layer_list=None, write_thumbnail=True) -> str:
     """
     生成交给 Photoshop.Application.DoJavaScript 执行的 ExtendScript。
 
@@ -146,6 +153,22 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None,
             "lf.writeln('PSD/PSB: '+d.name);"
             "lf.writeln('图层列表（含分组）:');dl(d,0);lf.close();}")
 
+    # Windows 资源管理器读取的是 PSD 内嵌的合成预览。仅对 PSD 写回兼容预览；
+    # PSB 往往超过 1 GB，整稿重存代价过高，保持原样。
+    thumbnail_js = ""
+    if write_thumbnail and Path(psd).suffix.lower() == ".psd":
+        thumbnail_js = (
+            f"{stage('thumbnail')}"
+            "var oldMC=null;try{"
+            "oldMC=app.preferences.maximizeCompatibility;"
+            "app.preferences.maximizeCompatibility=QueryStateType.ALWAYS;"
+            # 轻量制造一次可撤销的脏状态，最终可见性保持不变，促使 Photoshop
+            # 重新保存并嵌入合成预览，而不是因文档无变化跳过写盘。
+            "var av=d.activeLayer.visible;d.activeLayer.visible=!av;"
+            "d.activeLayer.visible=av;d.save();"
+            "}catch(te){}finally{try{if(oldMC!==null)"
+            "app.preferences.maximizeCompatibility=oldMC;}catch(re){}}")
+
     return (
         "app.displayDialogs=DialogModes.NO;"
         f"{progress_js}"
@@ -153,8 +176,9 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None,
         "try{"
         f"{stage('opening')}"
         f"d=app.open(new File('{js_escape(psd)}'));"
+        f"{thumbnail_js}"
         # PNG 不支持 32 位浮点通道，也不支持 CMYK —— 先做内存里的转换。
-        # 文档最终以 DONOTSAVECHANGES 关闭，磁盘原稿不受任何影响。
+        # 位深、模式、裁切和拼合只用于内存副本，最终不写回原稿。
         f"{stage('preparing')}"
         "if(d.bitsPerChannel==BitsPerChannelType.THIRTYTWO)"
         "d.bitsPerChannel=BitsPerChannelType.SIXTEEN;"
@@ -600,7 +624,15 @@ def selftest() -> int:
           "PNGSaveOptions" in js_all and "JPEGSaveOptions" in js_all)
     check("JPG 前拼合填白 + 降 8 位",
           "d.flatten()" in js_all and "BitsPerChannelType.EIGHT" in js_all)
-    check("不保存原稿", "DONOTSAVECHANGES" in js_all)
+    check("导出修改不写回原稿", "DONOTSAVECHANGES" in js_all)
+    js_psd_thumbnail = build_script(
+        r"F:\主图.psd", None, r"F:\out\主图.jpg", "none", ("jpg",))
+    check("PSD 自动写入资源管理器兼容缩略图",
+          "maximizeCompatibility" in js_psd_thumbnail
+          and "d.save()" in js_psd_thumbnail)
+    check("PSB 不因缩略图整稿重存",
+          "maximizeCompatibility" not in build_script(
+              r"F:\大文件.psb", None, r"F:\out\x.jpg", "none", ("jpg",)))
     check("关闭所有弹窗", "displayDialogs=DialogModes.NO" in js_all)
 
     js_png = build_script(tricky, r"F:\out\x.png", None, "both", ("png",))
@@ -836,6 +868,10 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.report_callback_exception = self.report_callback_exception
         self.root.title(APP_TITLE)
+        try:
+            self.root.iconbitmap(default=str(resource_path("assets/app_icon.ico")))
+        except Exception:
+            pass
         self.root.geometry("760x720")
         self.root.minsize(700, 620)
         self.root.configure(bg=C_BG)
@@ -1402,6 +1438,11 @@ class App:
             # Tk 的 splitlist 能正确解析带空格、中文和花括号包裹的路径。
             paths = list(self.root.tk.splitlist(event.data))
             self.add_paths(paths)
+            # 普通导图模式默认“拖入即转换”；高级 A+ 仍需进入专用工作区
+            # 选择切图方式与输出规格。
+            if (self.files and not self.busy
+                    and not self.output_mode.get().startswith("高级 A+")):
+                self.root.after(120, self.start)
         except Exception:
             self.log("! 拖放数据解析失败，请改用按钮选择")
         # TkDND 回调必须返回一个动作；返回 None 可能被 Tcl 当作无效动作。
@@ -1612,10 +1653,20 @@ class ModernApp(LegacyApp):
                                fg_color="#111827")
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
-        ctk.CTkLabel(sidebar, text="PS", width=52, height=52,
-                     corner_radius=14, fg_color="#2563eb", text_color="white",
-                     font=("Segoe UI", 22, "bold")).pack(anchor="w", padx=22,
-                                                           pady=(25, 10))
+        try:
+            from PIL import Image
+            self.brand_icon = ctk.CTkImage(
+                light_image=Image.open(resource_path("assets/app_icon.png")),
+                dark_image=Image.open(resource_path("assets/app_icon.png")),
+                size=(58, 58))
+            ctk.CTkLabel(sidebar, text="", image=self.brand_icon,
+                         width=58, height=58).pack(anchor="w", padx=20,
+                                                   pady=(22, 8))
+        except Exception:
+            ctk.CTkLabel(sidebar, text="PS", width=52, height=52,
+                         corner_radius=14, fg_color="#2563eb", text_color="white",
+                         font=("Segoe UI", 22, "bold")).pack(
+                             anchor="w", padx=22, pady=(25, 10))
         ctk.CTkLabel(sidebar, text="PSD Studio", text_color="#f9fafb",
                      font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=22)
         ctk.CTkLabel(sidebar, text="电商设计批量导图工具", text_color="#9ca3af",
@@ -1659,7 +1710,7 @@ class ModernApp(LegacyApp):
                                       text_color="#111827", font=title_font)
         self.page_title.pack(anchor="w")
         self.page_hint = ctk.CTkLabel(
-            top, text="批量调用 Photoshop 导出，原稿不会被修改",
+            top, text="拖入即转换 · 自动补写 PSD 缩略图",
             text_color="#64748b", font=small)
         self.page_hint.pack(anchor="w", pady=(2, 0))
 
@@ -1820,7 +1871,7 @@ class ModernApp(LegacyApp):
                                   hover_color="#1d4ed8")
         else:
             self.page_title.configure(text="渲染图片")
-            self.page_hint.configure(text="最高质量 JPG 默认保存在源文件旁边")
+            self.page_hint.configure(text="拖入即转换 · JPG 存在源文件旁 · 自动补写 PSD 缩略图")
             self.drop.configure(text="⇧\n将渲染 PSD / PSB 文件或文件夹拖到这里\n也可以点击下方按钮选择",
                                 bg="#eff6ff", fg="#1d4ed8",
                                 highlightbackground="#60a5fa")
