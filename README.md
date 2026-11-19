@@ -250,6 +250,8 @@ python build_exe.py --onedir
 
 > 2026-11-19 v2.5：普通转换分为“渲染图片”和“主副图画板”模式。渲染图片默认把 JPG 放在源文件旁；主副图画板建立同名文件夹。高级 A+ 可识别“电脑端/手机端”整套项目结构，并把首页连屏对应到“第一屏1/2”。
 
+> 2026-11-19 v2.6：工作模式下拉框统一显示“渲染图片 / 主副图画板 / 高级 A+ 连屏”三种模式；选择高级 A+ 后由主按钮打开专用窗口。JPG 文案明确标注 Photoshop `12/12` 为最高质量。
+
 > 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。

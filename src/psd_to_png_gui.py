@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.5"
+VERSION = "2.6"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -658,11 +658,10 @@ class App:
         mode_combo["values"] = (
             "渲染图片（JPG 放源文件旁）",
             "主副图画板（建立同名文件夹）",
+            "高级 A+ 连屏（电脑端 / 手机端）",
         )
         mode_combo.current(0)
         mode_combo.pack(side="left", padx=4)
-        tk.Button(mode_row, text="高级 A+ 连屏模式", command=self.open_a_plus,
-                  font=("Microsoft YaHei UI", 8), fg="#7c3aed").pack(side="right")
 
         # 第 2 行：裁切方式
         row1 = tk.Frame(self.root, bg="#f5f6f8")
@@ -686,7 +685,7 @@ class App:
         tk.Checkbutton(row2, text="PNG（保留透明）", variable=self.var_png,
                        font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
                        activebackground="#f5f6f8").pack(side="left", padx=(4, 10))
-        tk.Checkbutton(row2, text="JPG（自动填白，质量 12）", variable=self.var_jpg,
+        tk.Checkbutton(row2, text="JPG（最高质量，Photoshop 12/12）", variable=self.var_jpg,
                        font=("Microsoft YaHei UI", 9), bg="#f5f6f8",
                        activebackground="#f5f6f8").pack(side="left")
         tk.Button(row2, text="快速预设", command=self.fast_preset,
@@ -699,8 +698,13 @@ class App:
         self.btn_folder = tk.Button(btns, text="选择文件夹（递归）", width=15,
                                     command=self.pick_folder)
         self.btn_go = tk.Button(btns, text="开始转换", width=10,
-                                command=self.start, bg="#2b6cb0", fg="white",
-                                activebackground="#245a94", activeforeground="white")
+                                 command=self.start, bg="#2b6cb0", fg="white",
+                                 activebackground="#245a94", activeforeground="white")
+        mode_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.btn_go.configure(
+                text="打开高级 A+" if self.output_mode.get().startswith("高级 A+")
+                else "开始转换"))
         self.btn_stop = tk.Button(btns, text="停止队列", width=9,
                                   command=self.request_stop, state="disabled")
         self.btn_clear = tk.Button(btns, text="清空", width=6, command=self.clear)
@@ -1002,6 +1006,9 @@ class App:
     # -- conversion ---------------------------------------------------------
     def start(self):
         if self.busy:
+            return
+        if self.output_mode.get().startswith("高级 A+"):
+            self.open_a_plus()
             return
         if not self.files:
             self.messagebox.showinfo(APP_TITLE, "请先拖入或选择 PSD / PSB 文件")
