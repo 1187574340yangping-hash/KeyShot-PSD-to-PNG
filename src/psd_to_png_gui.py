@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.4"
+VERSION = "2.5"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -180,14 +180,15 @@ def collect(paths) -> list:
     return found
 
 
-def unique_outputs(src: Path, formats) -> dict:
+def unique_outputs(src: Path, formats, use_folder=False) -> dict:
     """
     为同一份内容挑一个未被占用的 stem，PNG 与 JPG 共用它，保证成对。
     阶梯：name.png/.jpg → name_PNG.png/.jpg → name_PNG_2.png/.jpg → ...
     """
     fmts = set(formats or ())
-    # 每个源文件使用同名文件夹，所有输出集中存放，避免源目录散落图片。
-    directory = (src.parent if str(src.parent) else Path(".")) / src.stem
+    base = src.parent if str(src.parent) else Path(".")
+    # 普通导出默认直接放在源文件旁；需要集中管理时可手动勾选同名文件夹。
+    directory = base / src.stem if use_folder else base
     directory.mkdir(parents=True, exist_ok=True)
     stem = src.stem
 
@@ -199,7 +200,8 @@ def unique_outputs(src: Path, formats) -> dict:
         if "jpg" in fmts:
             out["jpg"] = directory / (stem + suffix + ".jpg")
         if out and all(not p.exists() for p in out.values()):
-            out["layers"] = directory / "图层列表.txt"
+            layer_name = "图层列表.txt" if use_folder else f"{src.stem}_图层列表.txt"
+            out["layers"] = directory / layer_name
             return out
     raise RuntimeError("同名输出过多（超过 10000 个），请先清理目录")
 
@@ -288,12 +290,60 @@ def _reference_groups(reference_root: Path, width: int, total_height: int):
     return valid
 
 
+def _normalized_a_plus_name(name):
+    """忽略设计文件常见的“拷贝/copy”和空格后缀后比较模块名。"""
+    value = Path(name).stem.lower().replace(" ", "").replace("_", "")
+    for token in ("拷贝", "copy"):
+        value = value.replace(token, "")
+    return value
+
+
+def _reference_module_groups(reference_root: Path, src: Path, width: int,
+                             total_height: int):
+    """识别完整 A+ 项目中的同名模块，或首页对应的第一屏分图。"""
+    from PIL import Image
+    by_parent = {}
+    for path in Path(reference_root).rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTS:
+            continue
+        try:
+            if path.resolve() == Path(src).resolve():
+                continue
+        except OSError:
+            pass
+        try:
+            with Image.open(path) as im:
+                if im.width == width:
+                    by_parent.setdefault(path.parent, []).append((path, im.height))
+        except Exception:
+            continue
+
+    src_name = _normalized_a_plus_name(src.name)
+    matched = []
+    for parent, items in by_parent.items():
+        items.sort(key=lambda item: item[0].name)
+        direct = [item for item in items
+                  if _normalized_a_plus_name(item[0].name) == src_name and
+                  item[1] == total_height]
+        if len(direct) == 1:
+            matched.append((parent, direct))
+            continue
+        if "首页" in src_name:
+            first_screen = [item for item in items if "第一屏" in item[0].stem]
+            if first_screen and sum(height for _, height in first_screen) == total_height:
+                matched.append((parent, first_screen))
+    return matched
+
+
 def split_a_plus_reference(src: Path, reference_root: Path, quality=95):
     """按照旧版文件夹的目录、文件名和尺寸，用新版连屏图原位更新。"""
     src, reference_root = Path(src), Path(reference_root)
     image = _open_rgb(src)
     try:
-        groups = _reference_groups(reference_root, image.width, image.height)
+        groups = _reference_module_groups(
+            reference_root, src, image.width, image.height)
+        if not groups:
+            groups = _reference_groups(reference_root, image.width, image.height)
         # 文件名中出现颜色/版本文件夹名时优先精确匹配，例如“粉色”“米白色”。
         named = [group for group in groups if group[0].name in src.stem]
         if len(named) == 1:
@@ -484,10 +534,14 @@ def selftest() -> int:
               o2["png"].name == "NTT72-D_PNG.png" and
               o2["jpg"].name == "NTT72-D_PNG.jpg",
               f"{sorted(o1.keys())} -> {o2['png'].name} / {o2['jpg'].name}")
-        check("输出进入源文件同名文件夹",
-              o1["jpg"].parent.name == "NTT72-D")
-        check("生成图层清单路径",
-              o1["layers"].name == "图层列表.txt")
+        check("渲染模式输出到源文件旁",
+              o1["jpg"].parent == src.parent)
+        check("渲染模式图层清单不与其他 PSD 冲突",
+              o1["layers"].name == "NTT72-D_图层列表.txt")
+        folder_outputs = unique_outputs(src, ("jpg",), use_folder=True)
+        check("主副图画板模式进入同名文件夹",
+              folder_outputs["jpg"].parent.name == "NTT72-D" and
+              folder_outputs["layers"].name == "图层列表.txt")
         o3 = unique_outputs(src, ("jpg",))
         check("只选 JPG 时仅输出 JPG 与图层清单",
               set(o3) == {"jpg", "layers"})
@@ -586,13 +640,31 @@ class App:
 
         self.drop = tk.Label(self.root,
                             text="↓\n把 PSD / PSB 文件或文件夹拖到这里\n"
-                                 "自动建同名文件夹，不修改原稿",
+                                 "默认导出到源文件旁边，不修改原稿",
                             font=("Microsoft YaHei UI", 12),
                             bg="#ffffff", fg="#2b6cb0", relief="solid", bd=1,
                             justify="center")
         self.drop.pack(fill="both", expand=True, padx=20, pady=(0, 10))
 
-        # 第 1 行：裁切方式
+        # 第 1 行：工作模式
+        mode_row = tk.Frame(self.root, bg="#f5f6f8")
+        mode_row.pack(fill="x", padx=20, pady=(0, 6))
+        tk.Label(mode_row, text="工作模式：", font=("Microsoft YaHei UI", 9),
+                 bg="#f5f6f8").pack(side="left")
+        self.output_mode = tk.StringVar(value="渲染图片（JPG 放源文件旁）")
+        mode_combo = ttk.Combobox(mode_row, textvariable=self.output_mode,
+                                  state="readonly", width=34,
+                                  font=("Microsoft YaHei UI", 9))
+        mode_combo["values"] = (
+            "渲染图片（JPG 放源文件旁）",
+            "主副图画板（建立同名文件夹）",
+        )
+        mode_combo.current(0)
+        mode_combo.pack(side="left", padx=4)
+        tk.Button(mode_row, text="高级 A+ 连屏模式", command=self.open_a_plus,
+                  font=("Microsoft YaHei UI", 8), fg="#7c3aed").pack(side="right")
+
+        # 第 2 行：裁切方式
         row1 = tk.Frame(self.root, bg="#f5f6f8")
         row1.pack(fill="x", padx=20, pady=(0, 6))
         tk.Label(row1, text="裁切方式：", font=("Microsoft YaHei UI", 9),
@@ -604,7 +676,7 @@ class App:
         combo.current(0)
         combo.pack(side="left", padx=4)
 
-        # 第 2 行：导出格式（可勾选）
+        # 第 3 行：导出格式（可勾选）
         row2 = tk.Frame(self.root, bg="#f5f6f8")
         row2.pack(fill="x", padx=20, pady=(0, 8))
         tk.Label(row2, text="导出格式：", font=("Microsoft YaHei UI", 9),
@@ -619,9 +691,6 @@ class App:
                        activebackground="#f5f6f8").pack(side="left")
         tk.Button(row2, text="快速预设", command=self.fast_preset,
                    font=("Microsoft YaHei UI", 8)).pack(side="right")
-        tk.Button(row2, text="高级 A+ 连屏切图", command=self.open_a_plus,
-                  font=("Microsoft YaHei UI", 8), fg="#7c3aed").pack(
-                      side="right", padx=(0, 8))
 
         btns = tk.Frame(self.root, bg="#f5f6f8")
         btns.pack(fill="x", padx=20, pady=(0, 8))
@@ -955,12 +1024,16 @@ class App:
 
         files = list(self.files)
         trim_mode = self.trim_key()
-        self.log(f"— 开始：{len(files)} 个文件，裁切={trim_mode}，格式={'+'.join(formats)}")
+        use_folder = self.output_mode.get().startswith("主副图画板")
+        mode_label = "主副图画板" if use_folder else "渲染图片"
+        self.log(f"— 开始：模式={mode_label}，{len(files)} 个文件，"
+                 f"裁切={trim_mode}，格式={'+'.join(formats)}")
 
-        threading.Thread(target=self.worker, args=(files, trim_mode, formats),
+        threading.Thread(target=self.worker,
+                         args=(files, trim_mode, formats, use_folder),
                          daemon=True).start()
 
-    def worker(self, files, trim_mode, formats):
+    def worker(self, files, trim_mode, formats, use_folder=False):
         ok = 0
         failed = 0
         processed = 0
@@ -977,7 +1050,7 @@ class App:
                 " — 大画板请耐心等待"))
             self.ui(lambda name=name: self.update_stage(name, "connecting"))
             try:
-                outputs = unique_outputs(src, formats)
+                outputs = unique_outputs(src, formats, use_folder)
                 convert_one(
                     src, outputs, trim_mode, formats,
                     progress_cb=lambda stage, name=name: self.ui(
