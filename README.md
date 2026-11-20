@@ -278,6 +278,8 @@ python build_exe.py --onedir
 
 > 2026-11-20 v3.0 补充：修复原生 Photoshop 画板被错误导出成整张工作区的问题，输出严格使用真实画板尺寸；重名画板使用 `-2`、`-3` 编号。画板 JPG 在 Photoshop 渲染后使用质量 99、4:4:4 优化编码，显著降低高细节图片体积并保持电商交付清晰度。
 
+> 2026-11-20 v3.0 主副图补充：主副图模式除逐画板 JPG 外，同时导出完整合成大图；名称含“整体”或“总览”的非画板分组会自动显示全部原生画板，并按所有画板的联合边界生成整体效果图，避免空白总览。
+
 > 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 
 > 注意：onedir 的程序名必须用 ASCII（`PSDTool`），中文名会让 bootloader 报 `Could not load PyInstaller's embedded PKG archive`——构建脚本里已按此处理。onefile 版仍用固定运行时临时目录 `C:\Users\Administrator\PSDToolRuntime`，避免每次在系统 `%TEMP%` 留下随机 `_MEI`。

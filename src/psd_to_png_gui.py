@@ -212,6 +212,10 @@ def build_artboard_script(psd, output_dir, manifest, progress_file=None,
         "var d=null;var mf=null;var cf=new File('" + js_escape(cancel_file) + "');"
         "function cleanName(s){return s.replace(/[\\\\\\/:*?\"<>|]/g,'_')"
         ".replace(/^\\s+|\\s+$/g,'')||'画板';}"
+        "function isNativeArtboard(layer){var r=new ActionReference();"
+        "r.putIdentifier(charIDToTypeID('Lyr '),layer.id);var x=executeActionGet(r),"
+        "e=stringIDToTypeID('artboardEnabled');"
+        "return x.hasKey(e)&&x.getBoolean(e);}"
         "function artboardRect(layer){"
         "var r=new ActionReference();r.putIdentifier(charIDToTypeID('Lyr '),layer.id);"
         "var x=executeActionGet(r),e=stringIDToTypeID('artboardEnabled'),"
@@ -224,6 +228,11 @@ def build_artboard_script(psd, output_dir, manifest, progress_file=None,
         "q.getUnitDoubleValue(stringIDToTypeID('top')),"
         "q.getUnitDoubleValue(stringIDToTypeID('right')),"
         "q.getUnitDoubleValue(stringIDToTypeID('bottom'))];}"
+        "function overviewRect(){var u=null;for(var i=0;i<d.layers.length;i++){"
+        "if(!isNativeArtboard(d.layers[i]))continue;var b=artboardRect(d.layers[i]);"
+        "if(!u)u=[b[0],b[1],b[2],b[3]];else{u[0]=Math.min(u[0],b[0]);"
+        "u[1]=Math.min(u[1],b[1]);u[2]=Math.max(u[2],b[2]);"
+        "u[3]=Math.max(u[3],b[3]);}}return u;}"
         "try{pg('opening');d=app.open(new File('" + js_escape(psd) + "'));"
         "mf=new File('" + js_escape(manifest) + "');mf.encoding='UTF8';mf.open('w');"
         "var count=0,total=0,baseState=d.activeHistoryState;pg('preflight');"
@@ -238,13 +247,16 @@ def build_artboard_script(psd, output_dir, manifest, progress_file=None,
         "for(var i=0;i<d.layers.length;i++){var rect=artboardRect(d.layers[i]);"
         "if(!rect)continue;"
         "if(cf.exists){mf.writeln('CANCELLED');break;}"
-        "var n=cleanName(d.layers[i].name),out=new File('" +
+        "var n=cleanName(d.layers[i].name),overview=!isNativeArtboard(d.layers[i])"
+        "&&/(整体|总览)/.test(n);if(overview){var ur=overviewRect();if(ur)rect=ur;}"
+        "var out=new File('" +
         js_escape(output_dir) + "/'+n+'.jpg'),z=2;"
         "while(out.exists){out=new File('" + js_escape(output_dir) +
         "/'+n+'-'+z+'.jpg');z++;}"
         "pg('board:'+String(count+1)+':'+String(total)+':'+n);"
         "try{for(var j=0;j<d.layers.length;j++){"
-        "if(d.layers[j].typename=='LayerSet')d.layers[j].visible=(j==i);}app.refresh();"
+        "if(d.layers[j].typename=='LayerSet')d.layers[j].visible="
+        "(overview?isNativeArtboard(d.layers[j]):j==i);}app.refresh();"
         # 原生画板文档在拼合前调用 crop 可能继续保留整张画板工作区；
         # 先拼合内存副本，再按已记录的画板绝对坐标裁切，尺寸才准确。
         "d.flatten();d.crop(rect);"
@@ -889,6 +901,9 @@ def selftest() -> int:
           "d.flatten();d.crop(rect);" in js_artboards)
     check("重名画板使用短横线编号",
           "/'+n+'-'+z+'.jpg'" in js_artboards)
+    check("主副图模式将全部原生画板合成为整体效果图",
+          "overviewRect" in js_artboards and "(整体|总览)" in js_artboards
+          and "overview?isNativeArtboard" in js_artboards)
 
     # --- v2.8：三种同名文件策略、PNG/JPG 共用后缀 ---
     with tempfile.TemporaryDirectory(prefix="psdtool_conflict_") as td:
