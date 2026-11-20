@@ -1663,6 +1663,12 @@ class App:
         try:
             # Tk 的 splitlist 能正确解析带空格、中文和花括号包裹的路径。
             paths = list(self.root.tk.splitlist(event.data))
+            # 每次新的拖放代表一批新任务。清掉上次完成后仍保留的队列，
+            # 避免先拖橙色、再拖蓝色时把旧橙色再次一起转换。
+            if not self.busy and self.files:
+                previous = len(self.files)
+                self.files = []
+                self.log(f"— 已替换上次队列（{previous} 个文件），仅处理本次拖入内容")
             self.add_paths(paths)
             # 普通导图模式默认“拖入即转换”；高级 A+ 仍需进入专用工作区
             # 选择切图方式与输出规格。
