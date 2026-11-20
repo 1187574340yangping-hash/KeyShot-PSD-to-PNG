@@ -71,6 +71,7 @@ STAGE_INFO = {
     "trimming": (45, "裁切画布"),
     "saving_png": (60, "保存 PNG"),
     "saving_jpg": (80, "拼合并保存 JPG"),
+    "optimizing_jpg": (90, "优化 JPG 体积"),
     "closing": (95, "关闭内存文档"),
     "done": (100, "完成"),
 }
@@ -240,11 +241,13 @@ def build_artboard_script(psd, output_dir, manifest, progress_file=None,
         "var n=cleanName(d.layers[i].name),out=new File('" +
         js_escape(output_dir) + "/'+n+'.jpg'),z=2;"
         "while(out.exists){out=new File('" + js_escape(output_dir) +
-        "/'+n+'_'+z+'.jpg');z++;}"
+        "/'+n+'-'+z+'.jpg');z++;}"
         "pg('board:'+String(count+1)+':'+String(total)+':'+n);"
         "try{for(var j=0;j<d.layers.length;j++){"
         "if(d.layers[j].typename=='LayerSet')d.layers[j].visible=(j==i);}app.refresh();"
-        "d.crop(rect);d.flatten();"
+        # 原生画板文档在拼合前调用 crop 可能继续保留整张画板工作区；
+        # 先拼合内存副本，再按已记录的画板绝对坐标裁切，尺寸才准确。
+        "d.flatten();d.crop(rect);"
         "if(d.mode!=DocumentMode.RGB)d.changeMode(ChangeMode.RGB);"
         "if(d.bitsPerChannel!=BitsPerChannelType.EIGHT)"
         "d.bitsPerChannel=BitsPerChannelType.EIGHT;"
@@ -727,6 +730,35 @@ def convert_artboards(psd: Path, output_dir: Path, progress_cb=None,
             raise RuntimeError("所有画板导出失败：" + board_errors[-1])
         if not outputs:
             raise RuntimeError("没有检测到可导出的 Photoshop 画板")
+        if progress_cb:
+            progress_cb("optimizing_jpg")
+        # Photoshop 的质量 12 在高细节渲染图上可能产生 10~20 MB 的 JPG。
+        # 用 4:4:4、质量 99 的优化编码保留肉眼质量，同时匹配电商交付体积。
+        from PIL import Image
+        for exported in outputs:
+            if cancel_event and cancel_event.is_set():
+                raise ConversionCancelled(
+                    f"已安全停止；当前文件已导出 {len(outputs)} 张")
+            temp_jpg = exported.with_name(exported.stem + ".opt.tmp.jpg")
+            try:
+                with Image.open(exported) as image:
+                    info = image.info.copy()
+                    save_kwargs = {
+                        "quality": 99, "optimize": True, "subsampling": 0,
+                    }
+                    if info.get("icc_profile"):
+                        save_kwargs["icc_profile"] = info["icc_profile"]
+                    if info.get("dpi"):
+                        save_kwargs["dpi"] = info["dpi"]
+                    image.convert("RGB").save(temp_jpg, "JPEG", **save_kwargs)
+                os.replace(temp_jpg, exported)
+            except Exception as exc:
+                try:
+                    temp_jpg.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if info_cb:
+                    info_cb(f"WARN:{exported.name} 体积优化失败，已保留原图：{exc}")
         return outputs
     finally:
         stop_monitor.set()
@@ -853,6 +885,10 @@ def selftest() -> int:
     check("画板模式包含预检、逐张进度与安全停止",
           "preflight_done" in js_artboards and "pg('board:" in js_artboards
           and "CANCELLED" in js_artboards)
+    check("原生画板先拼合再按画板坐标裁切",
+          "d.flatten();d.crop(rect);" in js_artboards)
+    check("重名画板使用短横线编号",
+          "/'+n+'-'+z+'.jpg'" in js_artboards)
 
     # --- v2.8：三种同名文件策略、PNG/JPG 共用后缀 ---
     with tempfile.TemporaryDirectory(prefix="psdtool_conflict_") as td:
