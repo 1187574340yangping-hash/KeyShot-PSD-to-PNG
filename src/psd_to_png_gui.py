@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.9
+PSD / PSB 一键转 PNG · JPG  ·  增强版 v3.0
 
 面向「PS 大画板 / 大画布」场景：画布很大、内容只占中间一小块、
 四周大量透明或白色留白；文件常常是 1~2 GB 的 .psb。
@@ -11,7 +11,7 @@ PSD / PSB 一键转 PNG · JPG  ·  增强版 v2.9
   2. 导出前自动裁切到内容边界（透明边 / 纯色边 / 两者 / 不裁）
   3. 导出格式可勾选：只要 PNG、只要 JPG、或两者都要
   4. 中文 / 全角括号路径、文件大小与逐张进度、单张失败不中断整批
-  5. 默认导出一张完整合成 JPG，并在同名文件夹写出图层名称清单
+  5. 渲染模式输出完整合成 JPG；画板模式按画板/分组名称逐张输出
 
 仍然保持原版承诺：不覆盖同名输出、转换修改只发生在内存副本；为让
 Windows 显示缩略图，PSD 会额外写回兼容合成预览（不改变图层与画面）。
@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 APP_TITLE = "PSD / PSB 一键转 PNG · JPG"
-VERSION = "2.9"
+VERSION = "3.0"
 SUPPORTED_EXTS = {".psd", ".psb"}
 FORMATS = ("png", "jpg")
 
@@ -64,6 +64,7 @@ C_PURPLE_LINE = "#ddd6fe"
 STAGE_INFO = {
     "connecting": (3, "连接 Photoshop"),
     "opening": (8, "打开大文件"),
+    "preflight": (18, "预检画板"),
     "thumbnail": (15, "写入 PSD 缩略图"),
     "preparing": (30, "转换色彩/位深"),
     "layers": (38, "读取图层名称"),
@@ -73,6 +74,10 @@ STAGE_INFO = {
     "closing": (95, "关闭内存文档"),
     "done": (100, "完成"),
 }
+
+
+class ConversionCancelled(RuntimeError):
+    """用户在一个安全检查点取消了当前转换。"""
 
 TRIM_MODES = {
     "transparent": "裁掉透明边（默认，适合四周透明留白）",
@@ -192,7 +197,8 @@ def build_script(psd, png, jpg, trim_mode, formats, progress_file=None,
     )
 
 
-def build_artboard_script(psd, output_dir, manifest, progress_file=None) -> str:
+def build_artboard_script(psd, output_dir, manifest, progress_file=None,
+                          cancel_file=None) -> str:
     """生成“逐画板导出 JPG”的 ExtendScript，文件名直接使用画板名称。"""
     progress_js = "function pg(s){}"
     if progress_file:
@@ -202,7 +208,7 @@ def build_artboard_script(psd, output_dir, manifest, progress_file=None) -> str:
 
     return (
         "app.displayDialogs=DialogModes.NO;" + progress_js +
-        "var d=null;var mf=null;"
+        "var d=null;var mf=null;var cf=new File('" + js_escape(cancel_file) + "');"
         "function cleanName(s){return s.replace(/[\\\\\\/:*?\"<>|]/g,'_')"
         ".replace(/^\\s+|\\s+$/g,'')||'画板';}"
         "function artboardRect(layer){"
@@ -219,13 +225,23 @@ def build_artboard_script(psd, output_dir, manifest, progress_file=None) -> str:
         "q.getUnitDoubleValue(stringIDToTypeID('bottom'))];}"
         "try{pg('opening');d=app.open(new File('" + js_escape(psd) + "'));"
         "mf=new File('" + js_escape(manifest) + "');mf.encoding='UTF8';mf.open('w');"
-        "var count=0,baseState=d.activeHistoryState;pg('layers');"
+        "var count=0,total=0,baseState=d.activeHistoryState;pg('preflight');"
+        "for(var p=0;p<d.layers.length;p++){var pr=artboardRect(d.layers[p]);"
+        "if(pr){total++;var pw=Math.max(0,Math.round(pr[2]-pr[0])),"
+        "ph=Math.max(0,Math.round(pr[3]-pr[1]));"
+        "mf.writeln('META:'+cleanName(d.layers[p].name)+'|'+pw+'x'+ph);"
+        "if(pw===0||ph===0||"
+        "(d.layers[p].typename=='LayerSet'&&d.layers[p].layers.length===0))"
+        "mf.writeln('WARN:'+cleanName(d.layers[p].name)+' 可能为空画板');}}"
+        "pg('preflight_done:'+total);"
         "for(var i=0;i<d.layers.length;i++){var rect=artboardRect(d.layers[i]);"
         "if(!rect)continue;"
+        "if(cf.exists){mf.writeln('CANCELLED');break;}"
         "var n=cleanName(d.layers[i].name),out=new File('" +
         js_escape(output_dir) + "/'+n+'.jpg'),z=2;"
         "while(out.exists){out=new File('" + js_escape(output_dir) +
         "/'+n+'_'+z+'.jpg');z++;}"
+        "pg('board:'+String(count+1)+':'+String(total)+':'+n);"
         "try{for(var j=0;j<d.layers.length;j++){"
         "if(d.layers[j].typename=='LayerSet')d.layers[j].visible=(j==i);}app.refresh();"
         "d.crop(rect);d.flatten();"
@@ -234,9 +250,10 @@ def build_artboard_script(psd, output_dir, manifest, progress_file=None) -> str:
         "d.bitsPerChannel=BitsPerChannelType.EIGHT;"
         "var jo=new JPEGSaveOptions();jo.quality=12;jo.embedColorProfile=true;"
         "jo.formatOptions=FormatOptions.STANDARDBASELINE;pg('saving_jpg');"
-        "d.saveAs(out,jo,true,Extension.LOWERCASE);mf.writeln(out.fsName);count++;"
-        "}finally{d.activeHistoryState=baseState;}}"
-        "if(count===0)throw new Error('没有检测到 Photoshop 画板或顶层图层组');"
+        "d.saveAs(out,jo,true,Extension.LOWERCASE);mf.writeln('OUTPUT:'+out.fsName);count++;"
+        "}catch(be){mf.writeln('BOARD_ERROR:'+n+'：'+be.toString());}"
+        "finally{d.activeHistoryState=baseState;}}"
+        "if(total===0)throw new Error('没有检测到 Photoshop 画板或顶层图层组');"
         "}catch(err){try{if(mf)mf.writeln('ERROR:'+err.toString()+' line='+err.line);"
         "}catch(we){}throw err;}finally{try{if(mf)mf.close();}catch(e){}pg('closing');"
         "if(d)d.close(SaveOptions.DONOTSAVECHANGES);pg('done');}"
@@ -630,7 +647,8 @@ def convert_one(psd: Path, outputs: dict, trim_mode: str, formats,
         pythoncom.CoUninitialize()
 
 
-def convert_artboards(psd: Path, output_dir: Path, progress_cb=None) -> list:
+def convert_artboards(psd: Path, output_dir: Path, progress_cb=None,
+                      cancel_event=None, info_cb=None) -> list:
     """把 PSD/PSB 顶层画板逐个导出成以画板名命名的最高质量 JPG。"""
     import pythoncom
 
@@ -640,17 +658,24 @@ def convert_artboards(psd: Path, output_dir: Path, progress_cb=None) -> list:
     token = f"{os.getpid()}_{threading.get_ident()}"
     marker = Path(tempfile.gettempdir()) / f"psdtool_progress_{token}.txt"
     manifest = Path(tempfile.gettempdir()) / f"psdtool_artboards_{token}.txt"
+    cancel_marker = Path(tempfile.gettempdir()) / f"psdtool_cancel_{token}.txt"
     stop_monitor = threading.Event()
     monitor = None
     emitted_count = [0]
     try:
         marker.unlink(missing_ok=True)
         manifest.unlink(missing_ok=True)
+        cancel_marker.unlink(missing_ok=True)
         if progress_cb:
             progress_cb("connecting")
 
             def watch_progress():
                 while not stop_monitor.wait(0.2):
+                    if cancel_event and cancel_event.is_set() and not cancel_marker.exists():
+                        try:
+                            cancel_marker.write_text("stop", encoding="ascii")
+                        except OSError:
+                            pass
                     try:
                         stages = marker.read_text(encoding="utf-8").splitlines()
                     except (OSError, UnicodeError):
@@ -665,7 +690,7 @@ def convert_artboards(psd: Path, output_dir: Path, progress_cb=None) -> list:
         app = photoshop()
         script = build_artboard_script(
             str(psd), str(output_dir), str(manifest),
-            marker if progress_cb else None)
+            marker if progress_cb else None, cancel_marker)
         try:
             for attempt in range(60):
                 try:
@@ -689,7 +714,17 @@ def convert_artboards(psd: Path, output_dir: Path, progress_cb=None) -> list:
         errors = [line[6:] for line in lines if line.startswith("ERROR:")]
         if errors:
             raise RuntimeError("画板导出失败：" + errors[-1])
-        outputs = [Path(line) for line in lines if not line.startswith("ERROR:")]
+        notices = [line for line in lines
+                   if line.startswith(("META:", "WARN:", "BOARD_ERROR:"))]
+        if info_cb:
+            for notice in notices:
+                info_cb(notice)
+        outputs = [Path(line[7:]) for line in lines if line.startswith("OUTPUT:")]
+        if "CANCELLED" in lines:
+            raise ConversionCancelled(f"已安全停止；当前文件已导出 {len(outputs)} 张")
+        board_errors = [line[12:] for line in lines if line.startswith("BOARD_ERROR:")]
+        if not outputs and board_errors:
+            raise RuntimeError("所有画板导出失败：" + board_errors[-1])
         if not outputs:
             raise RuntimeError("没有检测到可导出的 Photoshop 画板")
         return outputs
@@ -697,7 +732,16 @@ def convert_artboards(psd: Path, output_dir: Path, progress_cb=None) -> list:
         stop_monitor.set()
         if monitor:
             monitor.join(timeout=1)
-        for temp_path in (marker, manifest):
+        if progress_cb:
+            try:
+                stages = marker.read_text(encoding="utf-8").splitlines()
+                for final_stage in stages[emitted_count[0]:]:
+                    if final_stage:
+                        progress_cb(final_stage)
+                    emitted_count[0] += 1
+            except (OSError, UnicodeError):
+                pass
+        for temp_path in (marker, manifest, cancel_marker):
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
@@ -806,6 +850,9 @@ def selftest() -> int:
     check("画板模式按画板名逐张导出 JPG",
           "artboardRect" in js_artboards and "d.layers[i].name" in js_artboards
           and "JPEGSaveOptions" in js_artboards)
+    check("画板模式包含预检、逐张进度与安全停止",
+          "preflight_done" in js_artboards and "pg('board:" in js_artboards
+          and "CANCELLED" in js_artboards)
 
     # --- v2.8：三种同名文件策略、PNG/JPG 共用后缀 ---
     with tempfile.TemporaryDirectory(prefix="psdtool_conflict_") as td:
@@ -1606,6 +1653,25 @@ class App:
         self.log("! 已请求停止；为保护原稿，当前 Photoshop 操作完成后再停止。")
 
     def update_stage(self, name, stage):
+        if stage.startswith("preflight_done:"):
+            total = stage.rsplit(":", 1)[-1]
+            self.current_progress.configure(mode="determinate", value=22)
+            self.current_progress_label.set(f"预检完成：检测到 {total} 个画板")
+            self.log(f"✓ {name}：检测到 {total} 个可导出画板/顶层分组")
+            return
+        if stage.startswith("board:"):
+            parts = stage.split(":", 3)
+            if len(parts) == 4:
+                try:
+                    current, total = int(parts[1]), max(1, int(parts[2]))
+                except ValueError:
+                    current, total = 1, 1
+                percent = 22 + round(68 * current / total)
+                board_name = parts[3]
+                self.current_progress.configure(mode="determinate", value=percent)
+                self.current_progress_label.set(
+                    f"导出画板 {current}/{total}：{board_name[:22]}")
+                return
         percent, label = STAGE_INFO.get(stage, (0, stage))
         short_name = name if len(name) <= 14 else name[:12] + "…"
         self.current_progress.configure(mode="determinate", value=percent)
@@ -1683,7 +1749,11 @@ class App:
                     produced_paths = convert_artboards(
                         src, directory,
                         progress_cb=lambda stage, name=name: self.ui(
-                            lambda stage=stage, name=name: self.update_stage(name, stage)))
+                            lambda stage=stage, name=name: self.update_stage(name, stage)),
+                        cancel_event=self.stop_requested,
+                        info_cb=lambda notice, name=name: self.ui(
+                            lambda notice=notice, name=name:
+                            self.log_artboard_notice(name, notice)))
                     outputs = {f"artboard_{n}": p
                                for n, p in enumerate(produced_paths, 1)}
                 else:
@@ -1708,6 +1778,10 @@ class App:
                     produced = " + ".join(p.name for p in outputs.values())
                     self.ui(lambda name=name, produced=produced: self.log(
                         f"√ {name} → {produced}"))
+            except ConversionCancelled as exc:
+                self.ui(lambda msg=str(exc): self.log("! " + msg))
+                processed = i
+                break
             except Exception as exc:
                 failed += 1
                 msg = str(exc)
@@ -1721,10 +1795,19 @@ class App:
             processed = i
 
         done_ok, done_fail, done_skip = ok, failed, skipped
-        stopped = processed < len(files) and self.stop_requested.is_set()
+        stopped = self.stop_requested.is_set()
         remaining = len(files) - processed
         self.ui(lambda: self.finish(done_ok, done_fail, stopped, remaining,
                                     done_skip))
+
+    def log_artboard_notice(self, filename, notice):
+        if notice.startswith("META:"):
+            name, _, size = notice[5:].partition("|")
+            self.log(f"  · 预检：{name}（{size or '尺寸未知'}）")
+        elif notice.startswith("WARN:"):
+            self.log(f"! {filename}：{notice[5:]}")
+        elif notice.startswith("BOARD_ERROR:"):
+            self.log(f"× {filename}：{notice[12:]}")
 
     def finish(self, ok, failed, stopped=False, remaining=0, skipped=0):
         self.busy = False
