@@ -469,6 +469,99 @@ def split_a_plus_fixed(src: Path, output_root=None, quality=95):
         image.close()
 
 
+def _content_row_runs(image, sample_step=12, white_limit=248, bridge=4):
+    """返回列图中的非白色纵向区段；允许图片内部出现少量纯白行。"""
+    gray = image.convert("L")
+    try:
+        pixels = gray.load()
+        width, height = gray.size
+        active = []
+        xs = list(range(0, width, max(1, sample_step)))
+        if width - 1 not in xs:
+            xs.append(width - 1)
+        for y in range(height):
+            active.append(any(pixels[x, y] < white_limit for x in xs))
+    finally:
+        gray.close()
+
+    # 填平很短的白线，避免画面中的白色分隔线把一张连屏误拆开。
+    index = 0
+    while index < len(active):
+        if active[index]:
+            index += 1
+            continue
+        end = index
+        while end < len(active) and not active[end]:
+            end += 1
+        if index > 0 and end < len(active) and end - index <= bridge:
+            for pos in range(index, end):
+                active[pos] = True
+        index = end
+
+    runs, start = [], None
+    for y, value in enumerate(active + [False]):
+        if value and start is None:
+            start = y
+        elif not value and start is not None:
+            runs.append((start, y))
+            start = None
+    return runs
+
+
+def is_a_plus_contact_sheet(src: Path):
+    """识别 1464px 电脑列 + 留白 + 1200px 手机列的高级 A+ 总图。"""
+    from PIL import Image
+    with Image.open(src) as image:
+        return image.width >= 1464 + 1200 and image.height >= 900
+
+
+def split_a_plus_contact_sheet(src: Path, output_root=None, quality=95):
+    """从高级 A+ 双列总图提取电脑/手机列，并按亚马逊规格连续切图。"""
+    src = Path(src)
+    image = _open_rgb(src)
+    try:
+        if image.width < 1464 + 1200:
+            raise ValueError("不是电脑端+手机端双列总图")
+        root = Path(output_root) if output_root else src.parent / src.stem
+        specs = (
+            ("电脑端", 0, 1464, 600, "电脑第一屏"),
+            ("手机端", image.width - 1200, image.width, 900, "手机第一屏"),
+        )
+        outputs = []
+        for folder_name, left, right, tile_height, prefix in specs:
+            column = image.crop((left, 0, right, image.height))
+            try:
+                runs = _content_row_runs(column)
+                valid = [(top, bottom) for top, bottom in runs
+                         if bottom - top >= tile_height]
+                if not valid:
+                    raise ValueError(f"{folder_name}列没有识别到有效画面")
+                number = 1
+                for top, bottom in valid:
+                    run_height = bottom - top
+                    # 边缘抗锯齿可能让区段相差 1~2px，吸附到标准屏高。
+                    screen_count = int(round(run_height / tile_height))
+                    expected = screen_count * tile_height
+                    if screen_count < 1 or abs(run_height - expected) > 4:
+                        raise ValueError(
+                            f"{folder_name}区段高度 {run_height}px 不能按 {tile_height}px 切分")
+                    bottom = min(image.height, top + expected)
+                    for y in range(top, bottom, tile_height):
+                        tile = column.crop((0, y, right - left, y + tile_height))
+                        out = root / folder_name / f"{prefix}{number}.jpg"
+                        try:
+                            _save_jpeg(tile, out, quality)
+                        finally:
+                            tile.close()
+                        outputs.append(out)
+                        number += 1
+            finally:
+                column.close()
+        return outputs
+    finally:
+        image.close()
+
+
 def _reference_groups(reference_root: Path, width: int, total_height: int):
     """找出宽度一致、累计高度等于连屏图的旧版图片组。"""
     from PIL import Image
@@ -1594,11 +1687,14 @@ class App:
             succeeded, failed = 0, []
             for src in selected:
                 try:
-                    if selected_mode == "reference":
+                    if is_a_plus_contact_sheet(src):
+                        # 2701px 等宽的电脑端+手机端组合总图：自动识别两列和白色间隔。
+                        target = Path(folder) if (selected_mode == "reference" and folder) else None
+                        outputs = split_a_plus_contact_sheet(src, target, jpg_quality)
+                    elif selected_mode == "reference":
                         outputs = split_a_plus_reference(src, Path(folder), jpg_quality)
                     else:
-                        outputs = split_a_plus_fixed(
-                            src, Path(folder) if folder else None, jpg_quality)
+                        outputs = split_a_plus_fixed(src, None, jpg_quality)
                     succeeded += 1
                     self.log(f"√ 高级A+：{src.name} → {len(outputs)} 张")
                 except Exception as exc:
