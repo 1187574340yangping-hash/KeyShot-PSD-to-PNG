@@ -13,6 +13,7 @@
 按 PyInstaller 在受限环境的经验：永远不删旧产物，只挪到 %TEMP%，
 避免触发批量删除保护；固定 --workpath，不加 --clean。
 """
+import os
 import shutil
 import subprocess
 import sys
@@ -101,7 +102,14 @@ def build(mode: str) -> int:
 
     cmd = pyinstaller_args(mode, WORK, OUT, SPEC)
     print("[build] " + " ".join(cmd), flush=True)
-    rc = subprocess.call(cmd, cwd=str(ROOT))
+    # PyInstaller 在受限账户下有时无法自行定位 Tcl/Tk，结果会生成一个
+    # 双击即退出的包。显式传入当前 Python 的 Tcl/Tk 目录，确保 GUI 模块入包。
+    env = os.environ.copy()
+    base_prefix = Path(subprocess.check_output(
+        [PY, "-c", "import sys; print(sys.base_prefix)"], text=True).strip())
+    env["TCL_LIBRARY"] = str(base_prefix / "tcl" / "tcl8.6")
+    env["TK_LIBRARY"] = str(base_prefix / "tcl" / "tk8.6")
+    rc = subprocess.call(cmd, cwd=str(ROOT), env=env)
     if rc != 0:
         print(f"[build] PyInstaller failed: {rc}")
         return rc
