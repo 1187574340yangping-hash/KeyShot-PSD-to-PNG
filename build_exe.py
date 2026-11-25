@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src" / "psd_to_png_gui.py"
 ICON = ROOT / "assets" / "app_icon.ico"
 ASSETS = ROOT / "assets"
+PYTHON_BASE = Path(r"C:\Users\Administrator\AppData\Local\Programs\Python\Python313")
+TKINTER_PY = PYTHON_BASE / "Lib" / "tkinter"
+TK_RUNTIME_HOOK = ROOT / "src" / "pyi_rth_tkdata.py"
 APP_NAME = "PSD一键转PNG"
 ASCII_NAME = "PSDTool"  # onedir 专用：中文名会让 PKG 路径解析失败
 OUT_NAME = "PSD-PSB一键转PNG-JPG.exe"
@@ -55,6 +58,11 @@ def pyinstaller_args(mode: str, work: Path, out: Path, spec: Path) -> list:
         "--windowed",
         "--icon", str(ICON),
         "--add-data", f"{ASSETS};assets",
+        # Python 更新后 PyInstaller 的 Tcl 探针偶尔会误判 Tk 安装损坏，
+        # 进而把 tkinter 整个排除。显式收入纯 Python 包，运行时再配合
+        # 已验证的 _tkinter.pyd 与 Tcl/Tk 数据目录。
+        "--add-data", f"{TKINTER_PY};tkinter",
+        "--runtime-hook", str(TK_RUNTIME_HOOK),
         "--name", APP_NAME,
         "--workpath", str(work),
         "--distpath", str(out),

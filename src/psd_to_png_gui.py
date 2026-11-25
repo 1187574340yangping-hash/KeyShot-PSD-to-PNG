@@ -331,6 +331,31 @@ def unique_outputs(src: Path, formats, use_folder=False, conflict="number"):
     raise RuntimeError("同名输出过多（超过 10000 个），请先清理目录")
 
 
+def inherit_source_timestamp(src: Path, outputs):
+    """让导出物继承源文件时间，按日期分组时仍显示在源文件附近。"""
+    try:
+        stat = Path(src).stat()
+        times = (stat.st_atime_ns, stat.st_mtime_ns)
+    except OSError:
+        return
+    parents = set()
+    for output in outputs or ():
+        path = Path(output)
+        try:
+            if path.is_file():
+                os.utime(path, ns=times)
+                parents.add(path.parent)
+        except OSError:
+            continue
+    # 画板模式会新建同名文件夹；同步文件夹时间，避免它被分到“今天”。
+    for parent in parents:
+        if parent != Path(src).parent:
+            try:
+                os.utime(parent, ns=times)
+            except OSError:
+                pass
+
+
 # 工作模式：key 用于持久化，display/value 用于界面，避免中文文案漂移。
 MODE_DEFS = (
     ("render", "渲染图片", "JPG 放源文件旁", "渲染图片（JPG 放源文件旁）"),
@@ -1160,6 +1185,15 @@ class App:
         import tkinter as tk
         from tkinter import filedialog, messagebox
 
+        # Give Windows a stable identity so the taskbar uses our icon instead
+        # of grouping the window under Python/Tk.
+        if os.name == "nt":
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "PSDStudio.PSDTool.3")
+            except Exception:
+                pass
+
         # windnd 通过 ctypes 安装 Win32 回调，在部分 64 位 Python/Tk 组合上
         # 拖入文件时会直接触发 ucrtbase.dll 0xc0000409，进程来不及抛出
         # Python 异常。tkinterdnd2 使用 TkDND，避免原生回调崩溃。
@@ -1188,6 +1222,13 @@ class App:
         self.root.title(APP_TITLE)
         try:
             self.root.iconbitmap(default=str(resource_path("assets/app_icon.ico")))
+        except Exception:
+            pass
+        try:
+            from PIL import ImageTk
+            self.taskbar_icon = ImageTk.PhotoImage(
+                Image.open(resource_path("assets/app_icon.png")))
+            self.root.iconphoto(True, self.taskbar_icon)
         except Exception:
             pass
         self.root.geometry("760x720")
@@ -1922,6 +1963,7 @@ class App:
                             src, outputs, trim_mode, formats,
                             progress_cb=lambda stage, name=name: self.ui(
                                 lambda stage=stage, name=name: self.update_stage(name, stage)))
+                    inherit_source_timestamp(src, outputs.values())
                     ok += 1
                     # 记录实际输出目录，供“打开输出目录”使用。
                     dirs = {p.parent for p in outputs.values()}
@@ -1929,8 +1971,10 @@ class App:
                         if directory not in self.output_dirs:
                             self.output_dirs.append(directory)
                     produced = " + ".join(p.name for p in outputs.values())
-                    self.ui(lambda name=name, produced=produced: self.log(
-                        f"√ {name} → {produced}"))
+                    output_location = str(next(iter(outputs.values())).parent)
+                    self.ui(lambda name=name, produced=produced,
+                            output_location=output_location: self.log(
+                        f"√ {name} → {produced}\n  保存位置：{output_location}"))
             except ConversionCancelled as exc:
                 self.ui(lambda msg=str(exc): self.log("! " + msg))
                 processed = i
@@ -2301,7 +2345,9 @@ def run_cli(paths, trim_mode, formats):
             convert_one(src, outputs, trim_mode, formats,
                         progress_cb=lambda stage: emit(
                             f"    [{STAGE_INFO.get(stage, (0, stage))[1]}]"))
+            inherit_source_timestamp(src, outputs.values())
             emit("    -> " + " + ".join(p.name for p in outputs.values()))
+            emit("    保存位置：" + str(next(iter(outputs.values())).parent))
             ok += 1
         except Exception as exc:
             emit(f"    FAILED: {exc}")
