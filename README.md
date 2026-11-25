@@ -2,7 +2,7 @@
 
 > 大画板、四周全是留白？拖进去立即转换，默认导出完整合成 JPG 和图层名称清单，并为 PSD 补写 Windows 缩略图。
 
-`Windows` · `Photoshop COM / ExtendScript` · `Python + tkinter（v2）` · `MIT`
+`Windows` · `Photoshop COM / ExtendScript` · `Python + CustomTkinter（v3）` · `MIT`
 
 一个绿色小工具：把 **PSD 和 PSB（Photoshop 大型文档）批量导出成 PNG / JPG**，并且在导出前**自动裁掉画布四周的大片空白**。它不自己解析文件，而是让本机已安装的 Adobe Photoshop 打开、裁切、另存——图层、混合模式、智能对象、蒙版、色彩配置的视觉效果与你在 Photoshop 里手工操作完全一致。
 
@@ -10,7 +10,8 @@
 
 | | 程序 | 能力 |
 | --- | --- | --- |
-| **v2.9（推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 全新现代化界面：深色模式导航、圆角设置卡片、醒目拖放区、统一按钮和进度反馈 |
+| **v3.0（当前推荐）** | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 渲染 JPG 放在源文件旁；按日期显示时继承 PSD/PSB 日期；主副图逐画板与完整大图、高级 A+、拖入自动转换、稳定进度与停止 |
+| v2.9 | 历史版本 | 全新现代化界面：深色模式导航、圆角设置卡片、醒目拖放区、统一按钮和进度反馈 |
 | v2.8 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 同名文件策略（自动编号 / 覆盖 / 跳过）、记住导出设置、一键打开输出目录、三种工作模式卡片 |
 | v2.7 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | 三张顶部业务模式卡片、蓝紫配色、拖放区随模式更新提示 |
 | v2.3 | [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip) | **支持 .psd + .psb**、默认合成 JPG、图层名称清单、同名输出文件夹、批量拖放与大文件进度 |
@@ -33,9 +34,9 @@
 
 ## 30 秒上手
 
-1. 下载 [`dist/PSD-PSB一键转PNG-JPG.exe`](dist/PSD-PSB一键转PNG-JPG.exe)，双击打开（无需安装、无需联网、无配置文件）。
+1. 下载 [`dist/PSDTool-onedir-fixed.zip`](dist/PSDTool-onedir-fixed.zip)，完整解压后双击 `PSDTool.exe`（无需安装、无需联网）。
 2. 把 **PSD / PSB 文件或整个文件夹**拖进窗口；也可以点「选择文件」多选或「选择文件夹」递归。
-3. 选**裁切方式**（默认「裁掉透明边」）和**导出格式**（默认只勾 JPG），点「开始转换」。程序会新建与源文件同名的文件夹，保存一张完整合成 JPG 和 `图层列表.txt`。
+3. 选择工作模式：普通渲染 JPG 保存在源文件旁；主副图画板与高级 A+ 自动建立同名文件夹。拖入后普通模式会自动开始转换。
 
 > 更快：把文件 / 文件夹直接拖到 EXE **图标**上启动，会自动开始转换。
 
@@ -281,6 +282,8 @@ python build_exe.py --onedir
 > 2026-11-20 v3.0 主副图补充：主副图模式除逐画板 JPG 外，同时导出完整合成大图；名称含“整体”或“总览”的非画板分组会自动显示全部原生画板，并按所有画板的联合边界生成整体效果图，避免空白总览。
 
 > 2026-11-20 v3.0 拖放修复：空闲时每次新拖入文件会自动替换上一次队列，只处理本次拖入内容；同一次拖入多个 PSD/PSB 仍会批量转换，避免先拖橙色、再拖蓝色时旧文件被重复处理。
+
+> 2026-11-25 v3.0 路径与日期修复：普通渲染始终按每个 PSD/PSB 的完整源路径输出到源文件旁，并让导出图片继承源文件修改日期；资源管理器按日期分组时，源文件与导出图会显示在同一日期组。日志同步显示完整保存路径。桌面包补充显式 Tkinter/Tcl 运行时配置，避免冻结包打不开。
 
 > 2026-11-19 v2.3：默认只输出完整合成 JPG；为每个 PSD/PSB 新建同名文件夹，并递归读取图层/分组名称写入 `图层列表.txt`。没有可裁透明边时自动跳过裁切，不影响保存。
 

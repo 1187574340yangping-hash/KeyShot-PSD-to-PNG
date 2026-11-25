@@ -4,7 +4,7 @@
 
 | 文件 | 对应版本 | 性质 |
 | --- | --- | --- |
-| `psd_to_png_gui.py` | **v2（当前维护，推荐）** | 完整源码，Python + tkinter |
+| `psd_to_png_gui.py` | **v3.0（当前维护，推荐）** | 完整源码，Python + CustomTkinter / tkinter |
 | `PsdToPng.cs` | v1 | 依据 `dist/PSD一键转PNG.exe` **重建的行为等价参考实现**，不是随原工具分发的原始源码 |
 | `build.bat` | v1 | C# 编译脚本（Windows 自带 `csc.exe`） |
 
@@ -12,7 +12,7 @@
 
 ---
 
-## v2 · `psd_to_png_gui.py`
+## v3.0 · `psd_to_png_gui.py`
 
 ### 运行环境
 
@@ -49,7 +49,7 @@ python src/psd_to_png_gui.py --cli "F:\杨平-产品图片\...\NTT72" --formats 
 | `--probe` | 创建 GUI 后 800ms 自动退出，写 `%TEMP%\psdtool_probe.json`，用于验证冻结包能否正常起窗口 |
 | `--drop-probe PATH` | 模拟一次拖放回调，写 `%TEMP%\psdtool_drop_probe.json`，用于验证冻结包拖放入口 |
 | `--selftest` | 纯逻辑自检 |
-| `--version` | 输出 `2.0` |
+| `--version` | 输出 `3.0` |
 
 > 把文件 / 文件夹拖到 **EXE 图标**上启动时，路径从 `argv` 传入（代码里 `parse_known_args()` 收集 `unknown`），会自动开始转换。
 
