@@ -31,3 +31,9 @@ test_*/
 # Keep it tracked even if a global gitignore excludes *.exe.
 !dist/
 !dist/*.exe
+
+# Local backups & verification screenshots — never publish
+*.bak
+*.bak_*
+/*verify.png
+/*launch.png

@@ -24,7 +24,9 @@ Windows 显示缩略图，PSD 会额外写回兼容合成预览（不改变图�
 
 import argparse
 import json
+import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -304,6 +306,67 @@ def collect(paths) -> list:
     return found
 
 
+def collect_aplus(paths) -> list:
+    """高级 A+ 输入收集：图片与 PSD / PSB 都可以，递归文件夹、去重。
+
+    普通导图只收 PSD / PSB；高级 A+ 连屏图的来源既可能是设计源稿，
+    也可能是 Photoshop 已经导出的 JPG / PNG 连屏图，因此这里放宽类型。
+    """
+    allowed = IMAGE_EXTS | SUPPORTED_EXTS
+    found = []
+    seen = set()
+
+    def add(p: Path):
+        key = os.path.normcase(os.path.abspath(str(p)))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(p)
+
+    for raw in paths:
+        try:
+            p = Path(raw)
+            if p.is_dir():
+                for child in sorted(p.rglob("*")):
+                    try:
+                        if child.is_file() and child.suffix.lower() in allowed:
+                            add(child)
+                    except (OSError, PermissionError):
+                        continue
+            elif p.is_file() and p.suffix.lower() in allowed:
+                add(p)
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def clean_drop_path(raw):
+    """清洗 Tk DND 返回的路径，修复中文/无空格反斜杠路径被 Tcl 转义的问题。
+
+    tkinterdnd2 把拖入路径交给 Tcl 的 splitlist；当路径不含空格时，Windows
+    反斜杠可能被当作转义字符，或者被多余花括号包裹。这里统一还原成原始
+    Windows 绝对路径；若清洗后仍不是有效路径，则回退到原始字符串。
+    """
+    text = str(raw).strip()
+    if not text:
+        return text
+    # 去掉 splitlist 可能保留的外层花括号与成对引号
+    if len(text) >= 2 and text[0] == "{" and text[-1] == "}":
+        text = text[1:-1]
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        text = text[1:-1]
+    candidate = text
+    if Path(candidate).exists():
+        return candidate
+    # Tcl 把 \x 反斜杠转义吃掉的情况：把常见被吞的反斜杠补回
+    # 形如 D:2026P5S... → 按盘符与已知目录结构重建失败时，回退原始值
+    return str(raw).strip()
+
+
+def clean_drop_list(items):
+    return [clean_drop_path(item) for item in items]
+
+
 def unique_outputs(src: Path, formats, use_folder=False, conflict="number"):
     """
     为同一份内容挑一个未被占用的 stem，PNG 与 JPG 共用它，保证成对。
@@ -540,8 +603,61 @@ def is_a_plus_contact_sheet(src: Path):
         return image.width >= 1464 + 1200 and image.height >= 900
 
 
-def split_a_plus_contact_sheet(src: Path, output_root=None, quality=95):
-    """从高级 A+ 双列总图提取电脑/手机列，并按亚马逊规格连续切图。"""
+_CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _aplus_name_key(name):
+    """按“第N屏M”的业务顺序排序参考文件名，而不是按字典序。
+
+    例：电脑第一屏1 / 电脑第一屏2 / 第三屏（轮播）1 / 第三屏（轮播）2 /
+    第四屏（轮播）1 / 第四屏（轮播）2 / 第六屏(轮播）1 / 第六屏(轮播）2 /
+    第七屏 → 顺序 1,1 / 1,2 / 3,1 / 3,2 / 4,1 / 4,2 / 6,1 / 6,2 / 7,0
+    """
+    import re
+    stem = Path(name).stem
+    screen = None
+    for ch in stem:
+        if ch in _CN_NUM:
+            screen = _CN_NUM[ch]
+            break
+    if screen is None:
+        m = re.search(r"(\d+)", stem)
+        screen = int(m.group(1)) if m else 99
+    nums = re.findall(r"(\d+)", stem)
+    sub = int(nums[-1]) if nums else 0
+    if len(nums) == 1 and screen == int(nums[0]):
+        sub = 0
+    return (screen, sub, stem)
+
+
+def reference_names(reference_root, subdir, expected_height):
+    """读取参考文件夹中某一列的文件名，按业务顺序排序。"""
+    from PIL import Image
+    d = Path(reference_root) / subdir
+    if not d.is_dir():
+        return []
+    items = []
+    for p in d.iterdir():
+        if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
+            continue
+        try:
+            with Image.open(p) as im:
+                if im.height == expected_height:
+                    items.append(p.name)
+        except Exception:
+            continue
+    items.sort(key=_aplus_name_key)
+    return items
+
+
+def split_a_plus_contact_sheet(src: Path, output_root=None, quality=95,
+                                reference_root=None):
+    """从高级 A+ 双列总图提取电脑/手机列，并按亚马逊规格连续切图。
+
+    reference_root 不为空时，切出的文件沿用参考文件夹里的中文业务名
+    （如“第三屏（轮播）1.jpg”），而不是“电脑第一屏N.jpg”序号名。
+    """
     src = Path(src)
     image = _open_rgb(src)
     try:
@@ -554,26 +670,36 @@ def split_a_plus_contact_sheet(src: Path, output_root=None, quality=95):
         )
         outputs = []
         for folder_name, left, right, tile_height, prefix in specs:
+            # 参考模式：沿用旧版中文业务名；数量不足时回退到序号名。
+            names = (reference_names(reference_root, folder_name, tile_height)
+                     if reference_root else [])
             column = image.crop((left, 0, right, image.height))
             try:
                 runs = _content_row_runs(column)
-                valid = [(top, bottom) for top, bottom in runs
-                         if bottom - top >= tile_height]
-                if not valid:
+                if not runs:
                     raise ValueError(f"{folder_name}列没有识别到有效画面")
                 number = 1
-                for top, bottom in valid:
+                for top, bottom in runs:
                     run_height = bottom - top
-                    # 边缘抗锯齿可能让区段相差 1~2px，吸附到标准屏高。
-                    screen_count = int(round(run_height / tile_height))
+                    # 每段内容对应若干标准屏。连屏图里每屏四周常留白，内容
+                    # 区段高度会略小于屏高（例如内容 561px、屏高 600px），
+                    # 因此按最接近的屏数吸附，而不是要求区段≥完整屏高。
+                    screen_count = max(1, int(round(run_height / tile_height)))
                     expected = screen_count * tile_height
-                    if screen_count < 1 or abs(run_height - expected) > 4:
+                    # 只排除明显是小图标/杂色的碎片区段：不足半屏直接忽略。
+                    if run_height < tile_height * 0.5:
+                        continue
+                    # 允许的偏差放宽到半屏，覆盖四周留白造成的高度缩水。
+                    if abs(run_height - expected) > tile_height * 0.5:
                         raise ValueError(
                             f"{folder_name}区段高度 {run_height}px 不能按 {tile_height}px 切分")
                     bottom = min(image.height, top + expected)
                     for y in range(top, bottom, tile_height):
                         tile = column.crop((0, y, right - left, y + tile_height))
-                        out = root / folder_name / f"{prefix}{number}.jpg"
+                        if number <= len(names):
+                            out = root / folder_name / names[number - 1]
+                        else:
+                            out = root / folder_name / f"{prefix}{number}.jpg"
                         try:
                             _save_jpeg(tile, out, quality)
                         finally:
@@ -687,6 +813,212 @@ def split_a_plus_reference(src: Path, reference_root: Path, quality=95):
         return outputs
     finally:
         image.close()
+
+
+def read_artboards(src, manifest):
+    """只读读取 PSD / PSB 的画板名字与坐标，写入 manifest 文件。
+
+    每行格式：NAME|x0,y0,x1,y1。读取失败返回空列表（调用方回退到参考命名）。
+    不改动源文档。
+    """
+    import pythoncom
+    src = Path(src)
+    manifest = Path(manifest)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.unlink(missing_ok=True)
+    script = (
+        "app.displayDialogs=DialogModes.NO;"
+        "var d=null,mf=null;"
+        "function cleanName(s){return s.replace(/[\\/:*?\"<>|]/g,'_')"
+        ".replace(/^\\s+|\\s+$/g,'');}"
+        "function isAB(l){var r=new ActionReference();"
+        "r.putIdentifier(charIDToTypeID('Lyr '),l.id);var x=executeActionGet(r),"
+        "e=stringIDToTypeID('artboardEnabled');"
+        "return x.hasKey(e)&&x.getBoolean(e);}"
+        "function rect(l){var r=new ActionReference();"
+        "r.putIdentifier(charIDToTypeID('Lyr '),l.id);var x=executeActionGet(r),"
+        "e=stringIDToTypeID('artboardEnabled'),k=stringIDToTypeID('artboard');"
+        "if(x.hasKey(e)&&x.getBoolean(e)&&x.hasKey(k)){"
+        "var a=x.getObjectValue(k),q=a.getObjectValue(stringIDToTypeID('artboardRect'));"
+        "return [q.getUnitDoubleValue(stringIDToTypeID('left')),"
+        "q.getUnitDoubleValue(stringIDToTypeID('top')),"
+        "q.getUnitDoubleValue(stringIDToTypeID('right')),"
+        "q.getUnitDoubleValue(stringIDToTypeID('bottom'))];}"
+        "if(l.typename=='LayerSet'){var b=l.bounds;return [b[0].as('px'),b[1].as('px'),"
+        "b[2].as('px'),b[3].as('px')];}return null;}"
+        "try{d=app.open(new File('" + js_escape(str(src)) + "'));"
+        "mf=new File('" + js_escape(str(manifest)) + "');mf.encoding='UTF8';mf.open('w');"
+        "for(var i=0;i<d.layers.length;i++){var l=d.layers[i];"
+        "if(!isAB(l))continue;var r=rect(l);if(!r)continue;"
+        "mf.writeln('BOARD:'+cleanName(l.name)+'|'+Math.round(r[0])+','+"
+        "Math.round(r[1])+','+Math.round(r[2])+','+Math.round(r[3]));}"
+        "}catch(err){if(mf)mf.writeln('ERROR:'+err.toString());}"
+        "finally{if(mf)mf.close();if(d)d.close(SaveOptions.DONOTSAVECHANGES);}"
+    )
+    pythoncom.CoInitialize()
+    app = None
+    try:
+        app = photoshop()
+        for attempt in range(60):
+            try:
+                app.DoJavaScript(script)
+                break
+            except Exception as exc:
+                code = getattr(exc, "hresult", None)
+                if code is None and getattr(exc, "args", None):
+                    code = exc.args[0]
+                if code not in (-2147417846, -2147418111) or attempt == 59:
+                    raise
+                time.sleep(2)
+    finally:
+        try:
+            del app
+        except Exception:
+            pass
+        pythoncom.CoUninitialize()
+
+    boards = []
+    if manifest.exists():
+        for line in manifest.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.startswith("BOARD:"):
+                continue
+            body = line[len("BOARD:"):]
+            name, _, coords = body.partition("|")
+            try:
+                x0, y0, x1, y1 = [int(v.strip()) for v in coords.split(",")]
+            except ValueError:
+                continue
+            if name and x1 > x0 and y1 > y0:
+                boards.append((name, x0, y0, x1, y1))
+    return boards
+
+
+def _safe_artboard_name(raw):
+    """把画板名清洗成安全的 Windows 文件名：去非法字符、收敛空白、去首尾点空格。"""
+    name = str(raw).strip()
+    for ch in '\\/:*?"<>|':
+        name = name.replace(ch, "_")
+    name = re.sub(r"\s+", " ", name).rstrip(". ")
+    return name or "未命名画板"
+
+
+def split_a_plus_by_artboards(src, boards, output_root=None, quality=95):
+    """按画板坐标与名字切图。画板高于屏高时按屏高均分并加 1/2 序号。
+
+    健壮性处理：
+      - 列分界按画板 x 坐标“最大间隙”自动判定，不写死 800px；
+      - 画板名统一清洗（去非法字符/首尾空格/重复空白）并做同名去重；
+      - 高度非整数倍时整屏数 + 余数超过半屏补一屏，避免 round 在 .5 处漏切。
+    返回输出文件列表；画板列表无效时返回空列表，由调用方回退。
+    """
+    from PIL import Image
+    if not boards:
+        return []
+
+    # 按 x0 排序后找最大相邻间隙作为电脑端 / 手机端的列分界。
+    xs = sorted({b[1] for b in boards})
+    if len(xs) < 2:
+        return []
+    gaps = [(xs[i + 1] - xs[i], (xs[i] + xs[i + 1]) / 2.0)
+            for i in range(len(xs) - 1)]
+    gap, split_x = max(gaps, key=lambda item: item[0])
+    if gap < 300:  # 未形成明显两列，交给回退逻辑按参考命名处理
+        return []
+    pc_boards = [b for b in boards if b[1] <= split_x]
+    mb_boards = [b for b in boards if b[1] > split_x]
+    if not pc_boards or not mb_boards:
+        return []
+
+    image = _open_rgb(src)
+    outputs = []
+    try:
+        for folder, items, tile_h in (
+            ("电脑端", pc_boards, 600), ("手机端", mb_boards, 900)):
+            # 从上到下按 y 排序，与人工浏览顺序一致。
+            items = sorted(items, key=lambda b: b[2])
+            used = {}
+            for name, x0, y0, x1, y1 in items:
+                x1 = min(x1, image.width)
+                y1 = min(y1, image.height)
+                height = y1 - y0
+                if height <= 0:
+                    continue
+                # 整屏数 + 余数超过半屏补一屏：替代 round，
+                # 避免 1500/600=2.5 被 round 成 2 屏而漏掉半屏内容。
+                screens = max(1, int(math.floor(height / tile_h)))
+                if height - screens * tile_h >= tile_h * 0.5:
+                    screens += 1
+                for i in range(screens):
+                    top = y0 + i * tile_h
+                    bottom = min(y1, top + tile_h)
+                    if bottom - top < tile_h * 0.5:
+                        continue
+                    tile = image.crop((x0, top, x1, bottom))
+                    label = _safe_artboard_name(name)
+                    # 第一屏画板拆两屏时，沿用“电脑第一屏1/2”“手机第一屏1/2”。
+                    if "第一屏" in label and screens > 1:
+                        prefix = "电脑" if folder == "电脑端" else "手机"
+                        label = "%s第一屏%d" % (prefix, i + 1)
+                    elif screens > 1:
+                        label = "%s%d" % (label, i + 1)
+                    # 同名去重：同一文件夹内不覆盖（如两列都叫“充电”时分列已隔开；
+                    # 同列真重名则追加 _2、_3）。
+                    base = label
+                    if base in used:
+                        used[base] += 1
+                        label = "%s_%d" % (base, used[base])
+                    else:
+                        used[base] = 1
+                    out = Path(output_root) / folder / (label + ".jpg")
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        _save_jpeg(tile, out, quality)
+                    finally:
+                        tile.close()
+                    outputs.append(out)
+    finally:
+        image.close()
+    return outputs
+
+
+def render_psd_to_jpg(src, jpg_path, progress_cb=None):
+    """用 Photoshop COM 把 PSD / PSB 渲染成整张连屏 JPG。
+
+    PIL 只能读 PSD，读不了 PSB（Photoshop 大型文档）；高级 A+ 的切图
+    逻辑基于 PIL，所以遇到 PSD / PSB 输入时先借 Photoshop 渲染成一张
+    完整合成 JPG（不裁切、不缩放、最高质量），再交给切图函数处理。
+    只写临时 JPG，绝不改动源 PSD / PSB。
+    """
+    import pythoncom
+    src = Path(src)
+    jpg_path = Path(jpg_path)
+    pythoncom.CoInitialize()
+    app = None
+    try:
+        app = photoshop()
+        script = build_script(
+            str(src), None, str(jpg_path), "none", ("jpg",),
+            progress_file=None, layer_list=None, write_thumbnail=False)
+        for attempt in range(60):
+            try:
+                app.DoJavaScript(script)
+                break
+            except Exception as exc:
+                code = getattr(exc, "hresult", None)
+                if code is None and getattr(exc, "args", None):
+                    code = exc.args[0]
+                if code not in (-2147417846, -2147418111) or attempt == 59:
+                    raise
+                time.sleep(2)
+        if not jpg_path.exists() or jpg_path.stat().st_size == 0:
+            raise RuntimeError("Photoshop 未生成渲染图，请确认 Photoshop 可正常打开文件")
+        return jpg_path
+    finally:
+        try:
+            del app
+        except Exception:
+            pass
+        pythoncom.CoUninitialize()
 
 
 # ---------------------------------------------------------------------------
@@ -1578,15 +1910,27 @@ class App:
 
     def open_a_plus(self):
         """打开独立的亚马逊高级 A+ 连屏切图窗口。"""
+        existing = getattr(self, "_aplus_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    self.log("高级 A+ 工作区已打开，请直接在其中拖入文件")
+                    return
+            except Exception:
+                pass
         tk = self.tk
         F = ("Microsoft YaHei UI", 9)
         FB = ("Microsoft YaHei UI", 9, "bold")
         win = tk.Toplevel(self.root)
+        self._aplus_win = win
         win.title("亚马逊高级 A+ 连屏导图")
         win.geometry("820x680")
         win.minsize(720, 600)
         win.configure(bg=C_BG)
         win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", lambda: self._on_aplus_close(win))
 
         # 品牌头（紫），与主界面呼应
         ap_header = tk.Frame(win, bg=C_PURPLE, height=72)
@@ -1605,7 +1949,11 @@ class App:
                  font=("Microsoft YaHei UI", 9), bg=C_PURPLE,
                  fg="#ede9fe").pack(anchor="w", pady=(3, 0))
 
-        files = []
+        # 把主界面已经拖入的连屏图直接带入高级 A+ 列表，避免用户点了
+        # “高级 A+ 开始转换”后还得重新选一遍（表现为按钮“没反应”）。
+        aplus_exts = IMAGE_EXTS | SUPPORTED_EXTS
+        files = [Path(p) for p in getattr(self, "files", [])
+                 if Path(p).is_file() and Path(p).suffix.lower() in aplus_exts]
         listbox = tk.Listbox(win, height=6)
 
         def refresh():
@@ -1613,31 +1961,47 @@ class App:
             for path in files:
                 listbox.insert("end", str(path))
 
+        # 高级 A+ 的输入既可以是已导出的图片，也可以直接是 PSD / PSB 连屏源图。
+        # PSB 会先用 Photoshop 渲染成临时 JPG 再切图（见 run_worker）。
+        APLUS_INPUT_EXTS = aplus_exts
+
         def add_images(paths):
             existing = {os.path.normcase(os.path.abspath(str(p))) for p in files}
+            added = 0
             for raw in paths:
-                path = Path(raw)
-                if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+                path = Path(clean_drop_path(raw))
+                if path.is_file() and path.suffix.lower() in APLUS_INPUT_EXTS:
                     key = os.path.normcase(os.path.abspath(str(path)))
                     if key not in existing:
                         files.append(path)
                         existing.add(key)
+                        added += 1
             refresh()
+            if added:
+                # 拖入后立刻给出可见反馈，避免用户以为“没反应”。
+                status.set(f"已添加 {added} 个连屏图，共 {len(files)} 个；点「开始转换」执行")
+            return added
 
         def pick_images():
             selected = self.filedialog.askopenfilenames(
-                parent=win, title="选择新版高级 A+ 连屏图",
-                filetypes=[("图片", "*.jpg;*.jpeg;*.png;*.webp;*.bmp")])
+                parent=win, title="选择新版高级 A+ 连屏图（图片或 PSD / PSB）",
+                filetypes=[("图片 / PSD / PSB",
+                            "*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.psd;*.psb")])
             if selected:
                 add_images(selected)
 
+        # 暴露给主界面：拖入后可直接补进已打开的工作区，不会重复开窗。
+        self._aplus_add_images = add_images
         if self.DND_FILES:
-            try:
-                listbox.drop_target_register(self.DND_FILES)
-                listbox.dnd_bind("<<Drop>>", lambda event: (
-                    add_images(self.root.tk.splitlist(event.data)), "copy")[1])
-            except Exception:
-                pass
+            drop_cb = lambda event: (
+                add_images(clean_drop_list(self.root.tk.splitlist(event.data))), "copy")[1]
+            # 整个窗口都可拖入，避免用户拖到标题栏/设置区时“没反应”。
+            for widget in (win, listbox):
+                try:
+                    widget.drop_target_register(self.DND_FILES)
+                    widget.dnd_bind("<<Drop>>", drop_cb)
+                except Exception:
+                    pass
 
         ap_body = tk.Frame(win, bg=C_BG)
         ap_body.pack(fill="both", expand=True, padx=18, pady=(12, 12))
@@ -1698,8 +2062,9 @@ class App:
         list_card.pack(in_=ap_body, fill="both", expand=True, pady=(12, 4))
         lh = tk.Frame(list_card, bg=C_CARD)
         lh.pack(fill="x", padx=12, pady=(8, 0))
-        tk.Label(lh, text="连屏图列表", font=FB, bg=C_CARD, fg=C_SUB).pack(side="left")
-        tk.Label(lh, text="可拖入图片", font=F, bg=C_CARD,
+        tk.Label(lh, text="连屏图列表（窗口任意位置可拖入）", font=FB,
+                 bg=C_CARD, fg=C_SUB).pack(side="left")
+        tk.Label(lh, text="JPG / PNG / PSD / PSB", font=F, bg=C_CARD,
                  fg=C_MUTED).pack(side="right")
         listbox.configure(bg=C_CARD, fg=C_INK, relief="flat",
                           highlightthickness=0, font=("Consolas", 9))
@@ -1726,20 +2091,57 @@ class App:
 
         def run_worker(selected, selected_mode, folder, jpg_quality):
             succeeded, failed = 0, []
+            # PSD / PSB 不能被 PIL 读取，先用 Photoshop 渲染成临时 JPG 再切图。
+            tmp_dir = Path(tempfile.gettempdir()) / f"psdtool_aplus_{os.getpid()}"
             for src in selected:
+                temp_jpg = None
+                source_psd = None
                 try:
-                    if is_a_plus_contact_sheet(src):
-                        # 2701px 等宽的电脑端+手机端组合总图：自动识别两列和白色间隔。
-                        target = Path(folder) if (selected_mode == "reference" and folder) else None
-                        outputs = split_a_plus_contact_sheet(src, target, jpg_quality)
+                    work = Path(src)
+                    if work.suffix.lower() in SUPPORTED_EXTS:
+                        source_psd = work
+                        self.ui(lambda n=work.name: status.set(f"正在渲染 {n}（Photoshop 大文件请稍候）…"))
+                        tmp_dir.mkdir(parents=True, exist_ok=True)
+                        temp_jpg = tmp_dir / f"aplus_{abs(hash(str(work)))}{work.stem}.jpg"
+                        render_psd_to_jpg(work, temp_jpg)
+                        work = temp_jpg
+
+                    if is_a_plus_contact_sheet(work):
+                        # 3648px 等宽的电脑端+手机端组合总图：自动识别两列和白色间隔。
+                        ref = Path(folder) if (selected_mode == "reference" and folder) else None
+                        outputs = []
+                        # 优先读取 PSD / PSB 的画板名字来命名（画板名即业务名）。
+                        if source_psd is not None:
+                            try:
+                                self.ui(lambda: status.set("正在读取画板名字…"))
+                                mf = tmp_dir / f"artboards_{abs(hash(str(source_psd)))}.txt"
+                                boards = read_artboards(source_psd, mf)
+                                if boards:
+                                    outputs = split_a_plus_by_artboards(
+                                        work, boards, ref, jpg_quality)
+                                    if outputs:
+                                        self.log(f"√ 高级A+：{src.name} 使用画板名字命名（{len(boards)} 个画板）")
+                            except Exception as be:
+                                self.log(f"! 画板名字读取失败，回退参考命名：{be}")
+                                outputs = []
+                        if not outputs:
+                            # 读不到画板则沿用参考文件夹的中文业务名。
+                            outputs = split_a_plus_contact_sheet(
+                                work, ref, jpg_quality, reference_root=ref)
                     elif selected_mode == "reference":
-                        outputs = split_a_plus_reference(src, Path(folder), jpg_quality)
+                        outputs = split_a_plus_reference(work, Path(folder), jpg_quality)
                     else:
-                        outputs = split_a_plus_fixed(src, None, jpg_quality)
+                        outputs = split_a_plus_fixed(work, None, jpg_quality)
                     succeeded += 1
                     self.log(f"√ 高级A+：{src.name} → {len(outputs)} 张")
                 except Exception as exc:
                     failed.append(f"{src.name}：{exc}")
+                finally:
+                    if temp_jpg is not None:
+                        try:
+                            temp_jpg.unlink(missing_ok=True)
+                        except OSError:
+                            pass
 
             def done():
                 start_button.configure(state="normal")
@@ -1777,6 +2179,12 @@ class App:
 
         start_button.configure(command=start_a_plus)
 
+        # 显示从主界面带入的 PSD / PSB；若有文件则提示用户直接点开始。
+        refresh()
+        if files:
+            status.set(f"已带入主界面的 {len(files)} 个连屏源文件，可直接点「开始转换」")
+            self.log(f"高级 A+：已从主界面带入 {len(files)} 个 PSD / PSB 源文件")
+
     def add_paths(self, paths):
         if self.busy:
             return
@@ -1798,8 +2206,29 @@ class App:
 
     def on_drop(self, event):
         try:
-            # Tk 的 splitlist 能正确解析带空格、中文和花括号包裹的路径。
-            paths = list(self.root.tk.splitlist(event.data))
+            # Tk 的 splitlist 能解析带空格/中文的路径；再经 clean_drop_list
+            # 兜底修复“无空格反斜杠路径被 Tcl 转义”的情况。
+            paths = clean_drop_list(self.root.tk.splitlist(event.data))
+            aplus_mode = self.output_mode.get().startswith("高级 A+")
+            if aplus_mode:
+                # 高级 A+：图片与 PSD / PSB 都收；拖入后立即进入专用工作区，
+                # 让用户在列表里看到文件，而不是“拖进去没反应”。
+                existing = {os.path.normcase(os.path.abspath(str(p)))
+                            for p in self.files}
+                added = [p for p in collect_aplus(paths)
+                         if os.path.normcase(os.path.abspath(str(p)))
+                         not in existing]
+                self.files.extend(added)
+                if added:
+                    self.status.set(
+                        f"已添加 {len(added)} 个 A+ 连屏图，正在打开高级 A+ 工作区…")
+                    self.log(f"高级 A+：拖入 {len(added)} 个文件，打开专用工作区")
+                    self.root.after(120, lambda: self._open_aplus_with(added))
+                else:
+                    self.status.set("未识别到可用文件（支持 JPG / PNG / PSD / PSB）")
+                    self.log("! 高级 A+ 拖入没有可用文件；支持 JPG / PNG / PSD / PSB")
+                return getattr(event, "action", "copy") or "copy"
+
             # 每次新的拖放代表一批新任务。清掉上次完成后仍保留的队列，
             # 避免先拖橙色、再拖蓝色时把旧橙色再次一起转换。
             if not self.busy and self.files:
@@ -1807,17 +2236,58 @@ class App:
                 self.files = []
                 self.log(f"— 已替换上次队列（{previous} 个文件），仅处理本次拖入内容")
             self.add_paths(paths)
-            # 普通导图模式默认“拖入即转换”；高级 A+ 仍需进入专用工作区
-            # 选择切图方式与输出规格。
-            if (self.files and not self.busy
-                    and not self.output_mode.get().startswith("高级 A+")):
+            # 普通导图模式默认“拖入即转换”。
+            if self.files and not self.busy:
                 self.root.after(120, self.start)
         except Exception:
             self.log("! 拖放数据解析失败，请改用按钮选择")
         # TkDND 回调必须返回一个动作；返回 None 可能被 Tcl 当作无效动作。
         return getattr(event, "action", "copy") or "copy"
 
+    def _open_aplus_with(self, paths=None):
+        """打开（或激活）高级 A+ 工作区，并补入本次拖入的文件。"""
+        win = getattr(self, "_aplus_win", None)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    if paths and getattr(self, "_aplus_add_images", None):
+                        self._aplus_add_images(paths)
+                    win.deiconify()
+                    win.lift()
+                    return
+            except Exception:
+                pass
+        self.open_a_plus()
+        if paths and getattr(self, "_aplus_add_images", None):
+            self._aplus_add_images(paths)
+
+    def _on_aplus_close(self, win):
+        """关闭高级 A+ 工作区时清理引用，下次可重新打开。"""
+        try:
+            win.destroy()
+        finally:
+            if getattr(self, "_aplus_win", None) is win:
+                self._aplus_win = None
+                self._aplus_add_images = None
+
     def pick_files(self):
+        if self.output_mode.get().startswith("高级 A+"):
+            paths = self.filedialog.askopenfilenames(
+                title="选择高级 A+ 连屏图（图片或 PSD / PSB）",
+                filetypes=[("图片 / PSD / PSB",
+                            "*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.psd;*.psb")])
+            if paths:
+                existing = {os.path.normcase(os.path.abspath(str(p)))
+                            for p in self.files}
+                added = [p for p in collect_aplus(paths)
+                         if os.path.normcase(os.path.abspath(str(p)))
+                         not in existing]
+                self.files.extend(added)
+                if added:
+                    self.status.set(
+                        f"已添加 {len(added)} 个 A+ 连屏图，正在打开高级 A+ 工作区…")
+                    self.root.after(120, lambda: self._open_aplus_with(added))
+            return
         paths = self.filedialog.askopenfilenames(
             title="选择 Photoshop 文件",
             filetypes=[("Photoshop PSD / PSB", "*.psd;*.psb"),
